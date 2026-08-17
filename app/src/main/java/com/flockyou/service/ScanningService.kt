@@ -347,7 +347,7 @@ class ScanningService : Service() {
 
     // Periodic IPC refresh job - ensures UI stays updated even when no events occur
     private var ipcRefreshJob: Job? = null
-    private val IPC_REFRESH_INTERVAL_MS = 5000L  // Refresh every 5 seconds
+    private val IPC_REFRESH_INTERVAL_MS = 30_000L  // Full resync safety net; event updates remain immediate
 
     // Battery monitoring for adaptive scanning
     private var batteryReceiver: BroadcastReceiver? = null
@@ -449,18 +449,22 @@ class ScanningService : Service() {
                             ipcClients.remove(client)
                             threadingMonitor.updateIpcClientCount(ipcClients.size)
                             Log.d(TAG, "IPC client unregistered (total: ${ipcClients.size})")
-                            // Stop IPC refresh if no clients remain
+                            // Stop UI-only background work when no clients remain.
                             if (ipcClients.isEmpty()) {
                                 stopIpcRefreshJob()
+                                threadingMonitor.stopMonitoring()
                             }
                         }
                     }
                     ScanningServiceIpc.MSG_REQUEST_STATE -> {
                         Log.d(TAG, "MSG_REQUEST_STATE received, replyTo=${msg.replyTo}")
                         msg.replyTo?.let { client ->
-                            Log.d(TAG, "Sending state to client...")
+                            // Explicit state requests are the authoritative full-resync path.
+                            // Routine state broadcasts below are intentionally basic-only.
+                            Log.d(TAG, "Sending full state sync to client...")
                             sendStateToClient(client)
-                            Log.d(TAG, "State sent to client")
+                            sendAllDataToClient(client)
+                            Log.d(TAG, "Full state sync sent")
                         } ?: Log.w(TAG, "MSG_REQUEST_STATE received but replyTo is null!")
                     }
                     ScanningServiceIpc.MSG_START_SCANNING -> {
@@ -514,6 +518,9 @@ class ScanningService : Service() {
                     }
                     ScanningServiceIpc.MSG_REQUEST_THREADING_DATA -> {
                         msg.replyTo?.let { client ->
+                            // Thread/process sampling is diagnostic work, not scanner work.
+                            // Start it only when a diagnostics consumer asks for it.
+                            threadingMonitor.startMonitoring()
                             sendThreadingDataToClient(client)
                         }
                     }
@@ -968,8 +975,8 @@ class ScanningService : Service() {
         // Start cross-domain correlation analysis job
         startCorrelationAnalysisJob()
 
-        // Start threading monitor for scanner performance tracking
-        threadingMonitor.startMonitoring()
+        // Keep counters available, but the 1 Hz heap/thread sampler is started
+        // only by MSG_REQUEST_THREADING_DATA and stops with the last UI client.
         threadingMonitor.updateIpcClientCount(ipcClients.size)
 
         // Warm up the LLM engine in the background for faster FP analysis
@@ -1114,12 +1121,14 @@ class ScanningService : Service() {
                         Log.e(TAG, "Error updating notification", e)
                     }
 
-                    // No attached UI means no broad IPC serialization work.
+                    // Routine scan cycles only need the compact state message.
+                    // Device/anomaly streams already broadcast event-driven updates, and
+                    // the 30-second full resync job repairs any missed client state.
                     if (ipcClients.isNotEmpty()) {
                         try {
-                            broadcastAllDataToClients()
+                            broadcastStateToClients()
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error broadcasting to IPC clients", e)
+                            Log.e(TAG, "Error broadcasting state to IPC clients", e)
                         }
                     }
 
