@@ -19,6 +19,7 @@ import com.flockyou.data.model.*
 import com.flockyou.detection.handler.BleDetectionContext
 import com.flockyou.detection.handler.BleDetectionResult
 import com.flockyou.worker.BackgroundAnalysisWorker
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -112,19 +113,22 @@ internal suspend fun ScanningService.handleDetection(detection: Detection) {
 
             Log.d(TAG, "New detection: ${detectionWithFp.deviceType} - ${detectionWithFp.macAddress ?: detectionWithFp.ssid} (FP score: ${detectionWithFp.fpScore ?: "N/A"})")
 
-            // Queue for enhanced LLM analysis if not in ephemeral mode
-            // This runs in background and will enhance the quick rule-based analysis
+            // Expensive per-detection analysis is opt-in. AI disabled means no
+            // WorkManager/foreground-process churn from the detection hot path.
             if (!currentPrivacySettings.ephemeralModeEnabled) {
-                try {
-                    BackgroundAnalysisWorker.triggerForDetections(
-                        this@handleDetection,
-                        listOf(detectionWithFp.id)
-                    )
-                    if (BuildConfig.DEBUG) {
-                        Log.d(TAG, "Queued detection for LLM analysis: ${detectionWithFp.id}")
+                val aiSettings = aiSettingsRepository.settings.first()
+                if (aiSettings.enabled && aiSettings.autoAnalyzeNewDetections) {
+                    try {
+                        BackgroundAnalysisWorker.triggerForDetections(
+                            this@handleDetection,
+                            listOf(detectionWithFp.id)
+                        )
+                        if (BuildConfig.DEBUG) {
+                            Log.d(TAG, "Queued detection for LLM analysis: ${detectionWithFp.id}")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to queue detection for LLM analysis: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to queue detection for LLM analysis: ${e.message}")
                 }
             }
 
@@ -201,17 +205,19 @@ internal fun ScanningService.handleDatabaseError(e: Exception) {
 internal suspend fun ScanningService.insertDetectionWithAnalysis(detection: Detection) {
     repository.insertDetection(detection)
 
-    // Trigger immediate LLM analysis for this detection
-    try {
-        BackgroundAnalysisWorker.triggerForDetections(
-            this@insertDetectionWithAnalysis,
-            listOf(detection.id)
-        )
-        if (BuildConfig.DEBUG) {
-            Log.d(TAG, "Triggered immediate LLM analysis for detection: ${detection.id}")
+    val aiSettings = aiSettingsRepository.settings.first()
+    if (aiSettings.enabled && aiSettings.autoAnalyzeNewDetections) {
+        try {
+            BackgroundAnalysisWorker.triggerForDetections(
+                this@insertDetectionWithAnalysis,
+                listOf(detection.id)
+            )
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "Triggered immediate LLM analysis for detection: ${detection.id}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to trigger immediate LLM analysis: ${e.message}")
         }
-    } catch (e: Exception) {
-        Log.w(TAG, "Failed to trigger immediate LLM analysis: ${e.message}")
     }
 }
 
@@ -636,11 +642,18 @@ internal suspend fun ScanningService.processSatelliteWithHandler(
 internal fun ScanningService.warmUpLlmEngine() {
     serviceScope.launch {
         try {
+            val aiSettings = aiSettingsRepository.settings.first()
+            if (!aiSettings.enabled || !aiSettings.autoAnalyzeNewDetections) {
+                Log.d(TAG, "LLM warm-up skipped - AI auto-analysis disabled")
+                return@launch
+            }
+
             Log.i(TAG, "Starting LLM warm-up in background...")
             val startTime = System.currentTimeMillis()
+            val engineManager = llmEngineManager.get()
 
             // Check if LLM engine is available
-            val activeEngine = llmEngineManager.activeEngine.value
+            val activeEngine = engineManager.activeEngine.value
             if (activeEngine == com.flockyou.ai.LlmEngine.RULE_BASED) {
                 Log.d(TAG, "LLM warm-up skipped - using rule-based engine only")
                 return@launch
@@ -649,11 +662,11 @@ internal fun ScanningService.warmUpLlmEngine() {
             // Run a simple test prompt to warm up the model
             // This forces the model to load into memory and JIT compile
             val warmupPrompt = "Classify: Is a device named 'TestDevice' a surveillance device? Answer YES or NO."
-            val response = llmEngineManager.generateResponse(warmupPrompt)
+            val response = engineManager.generateResponse(warmupPrompt)
 
             val elapsed = System.currentTimeMillis() - startTime
             if (response != null) {
-                Log.i(TAG, "LLM warm-up completed in ${elapsed}ms (engine: ${llmEngineManager.activeEngine.value})")
+                Log.i(TAG, "LLM warm-up completed in ${elapsed}ms (engine: ${engineManager.activeEngine.value})")
             } else {
                 Log.w(TAG, "LLM warm-up completed but returned null response (engine may fall back to rule-based)")
             }

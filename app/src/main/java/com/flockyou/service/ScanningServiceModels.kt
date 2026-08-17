@@ -16,7 +16,7 @@ package com.flockyou.service
 
 // Default scan timing values
 private const val DEFAULT_WIFI_SCAN_INTERVAL = 25000L
-private const val DEFAULT_BLE_SCAN_DURATION = 25000L
+private const val DEFAULT_BLE_SCAN_DURATION = 10000L
 private const val DEFAULT_BLE_COOLDOWN = 4000L
 private const val DEFAULT_INACTIVE_TIMEOUT = 60000L
 private const val DEFAULT_SEEN_DEVICE_TIMEOUT = 300000L

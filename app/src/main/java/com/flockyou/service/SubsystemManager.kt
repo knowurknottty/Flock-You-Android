@@ -425,10 +425,12 @@ internal fun ScanningService.stopRogueWifiMonitoring() {
 // ==================== RF Signal Analysis ====================
 
 internal fun ScanningService.startRfSignalAnalysis() {
-    // Only start RF analysis if RF detection is enabled
-    if (currentDetectionSettings?.enableRfDetection != true) {
+    if (!currentDetectionSettings.enableRfDetection) {
         Log.d(TAG, "RF signal analysis disabled by settings, skipping")
         return
+    }
+    if (rfSignalAnalyzer == null) {
+        rfSignalAnalyzer = RfSignalAnalyzer(applicationContext, detectorCallbackImpl)
     }
     Log.d(TAG, "Starting RF signal analysis")
 
@@ -561,6 +563,10 @@ internal fun ScanningService.startUltrasonicDetection() {
         return
     }
 
+    if (ultrasonicDetector == null) {
+        ultrasonicDetector = UltrasonicDetector(applicationContext, detectorCallbackImpl)
+    }
+
     Log.d(TAG, "Starting ultrasonic beacon detection (user consented, audio encrypted in memory)")
 
     ultrasonicDetector?.startMonitoring()
@@ -675,6 +681,10 @@ internal fun ScanningService.startGnssMonitoring() {
         ScanningServiceState.gnssMonitorStatus.value = SubsystemStatus.PermissionDenied("ACCESS_FINE_LOCATION")
         Log.w(TAG, "Missing location permissions for GNSS monitoring")
         return
+    }
+
+    if (gnssSatelliteMonitor == null) {
+        gnssSatelliteMonitor = com.flockyou.monitoring.GnssSatelliteMonitor(applicationContext, detectorCallbackImpl)
     }
 
     Log.d(TAG, "Starting GNSS satellite monitoring for spoofing/jamming detection")

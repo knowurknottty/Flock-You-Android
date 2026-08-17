@@ -97,9 +97,12 @@ class ScannerThreadingMonitor @Inject constructor() {
     /**
      * Start monitoring - call when scanning service starts
      */
+    val isMonitoring: Boolean
+        get() = snapshotJob?.isActive == true
+
     fun startMonitoring() {
-        Log.i(TAG, "Starting scanner threading monitor")
-        snapshotJob?.cancel()
+        if (snapshotJob?.isActive == true) return
+        Log.i(TAG, "Starting scanner threading monitor on demand")
         snapshotJob = monitorScope.launch {
             while (isActive) {
                 captureSnapshot()

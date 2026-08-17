@@ -119,7 +119,7 @@ object ScanningServiceState {
     val learnedSignatures = MutableStateFlow<List<LearnedSignature>>(emptyList())
 
     // Packet rate tracking for Signal trigger detection
-    private val devicePacketCounts = java.util.concurrent.ConcurrentHashMap<String, MutableList<Long>>()
+    private val devicePacketCounts = java.util.concurrent.ConcurrentHashMap<String, java.util.ArrayDeque<Long>>()
     private val packetCountsLock = Any()
     val highActivityDevices = MutableStateFlow<List<String>>(emptyList())
 
@@ -172,14 +172,11 @@ object ScanningServiceState {
         val cutoff = now - PACKET_RATE_WINDOW_MS
 
         val rate = synchronized(packetCountsLock) {
-            val packets = devicePacketCounts.getOrPut(macAddress) { mutableListOf() }
-            packets.add(now)
+            val packets = devicePacketCounts.getOrPut(macAddress) { java.util.ArrayDeque() }
+            packets.addLast(now)
 
-            val iterator = packets.iterator()
-            while (iterator.hasNext()) {
-                if (iterator.next() < cutoff) {
-                    iterator.remove()
-                }
+            while (packets.isNotEmpty() && packets.peekFirst() < cutoff) {
+                packets.removeFirst()
             }
 
             if (packets.size > 1) {

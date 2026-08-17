@@ -89,11 +89,6 @@ internal fun ScanningService.sendStateToClient(client: Messenger) {
         Log.d(TAG, "Sending MSG_STATE_UPDATE: isScanning=${isScanning.value}, scanStatus=${scanStatus.value}")
         client.send(msg)
         Log.d(TAG, "MSG_STATE_UPDATE sent")
-
-        // Also send all complex data on state request (initial sync)
-        Log.d(TAG, "Calling sendAllDataToClient...")
-        sendAllDataToClient(client)
-        Log.d(TAG, "sendAllDataToClient completed")
     } catch (e: RemoteException) {
         Log.e(TAG, "Failed to send state to client", e)
         ipcClients.remove(client)
@@ -236,8 +231,10 @@ internal fun ScanningService.sendAllDataToClient(client: Messenger) {
         }
         client.send(statsMsg)
 
-        // Send threading data
-        sendThreadingDataToClient(client)
+        // Threading diagnostics are opt-in and may not be sampling at all.
+        if (threadingMonitor.isMonitoring) {
+            sendThreadingDataToClient(client)
+        }
     } catch (e: RemoteException) {
         Log.e(TAG, "Failed to send all data to client", e)
     }
@@ -637,7 +634,9 @@ internal fun ScanningService.broadcastAllSubsystemData() {
     broadcastRfData()
     broadcastUltrasonicData()
     broadcastGnssData()
-    broadcastThreadingData()
+    if (threadingMonitor.isMonitoring) {
+        broadcastThreadingData()
+    }
 }
 
 /**

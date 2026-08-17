@@ -28,8 +28,11 @@ import com.flockyou.detection.handler.CellularDetectionHandler
 import com.flockyou.detection.handler.SatelliteDetectionHandler
 import com.google.android.gms.location.*
 import com.google.gson.Gson
+import dagger.Lazy
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import java.util.*
 import java.util.concurrent.atomic.AtomicInteger
@@ -121,6 +124,11 @@ class ScanningService : Service() {
         private const val HEALTH_CHECK_INTERVAL_MS = 30_000L
         private const val DETECTOR_STALE_THRESHOLD_MS = 120_000L
         private const val BLE_HEALTH_UPDATE_THROTTLE_MS = 5_000L
+        private const val SCAN_STATS_BROADCAST_THROTTLE_MS = 1_500L
+        private const val SEEN_DEVICE_BROADCAST_THROTTLE_MS = 750L
+        private const val SEEN_WIFI_PUBLISH_DELAY_MS = 250L
+        private const val MAX_SEEN_DEVICE_REGISTRY_SIZE = 100
+        private const val HEARTBEAT_RECORD_INTERVAL_MS = 60_000L
         private const val BLE_WATCHDOG_THRESHOLD_MS = 60_000L
         private const val BLE_WATCHDOG_MAX_FAILURES = 3
 
@@ -163,6 +171,9 @@ class ScanningService : Service() {
 
     @Inject
     lateinit var privacySettingsRepository: com.flockyou.data.PrivacySettingsRepository
+
+    @Inject
+    lateinit var aiSettingsRepository: com.flockyou.data.AiSettingsRepository
 
     @Inject
     lateinit var scanSettingsRepository: com.flockyou.data.ScanSettingsRepository
@@ -225,7 +236,7 @@ class ScanningService : Service() {
     lateinit var enrichedDataCache: com.flockyou.ai.EnrichedDataCache
 
     @Inject
-    lateinit var llmEngineManager: com.flockyou.ai.LlmEngineManager
+    lateinit var llmEngineManager: Lazy<com.flockyou.ai.LlmEngineManager>
 
     @Inject
     lateinit var deduplicator: com.flockyou.detection.DetectionDeduplicator
@@ -255,6 +266,18 @@ class ScanningService : Service() {
     private var nukeReceiver: BroadcastReceiver? = null
 
     internal val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val bleResultChannel = Channel<ScanResult>(
+        capacity = 128,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    private var bleProcessorJob: Job? = null
+    private val seenBleRegistry = java.util.LinkedHashMap<String, SeenDevice>(128, 0.75f, true)
+    private val seenWifiRegistry = java.util.LinkedHashMap<String, SeenDevice>(128, 0.75f, true)
+    private var seenBlePublishJob: Job? = null
+    private var seenWifiPublishJob: Job? = null
+    private var lastScanStatsBroadcastTime = 0L
+    private var lastHeartbeatRecordElapsed = 0L
+    private var lastNotificationContentText: String? = null
     private val gson = Gson()
 
     // Bluetooth
@@ -326,11 +349,12 @@ class ScanningService : Service() {
 
     // Cross-domain correlation analysis job
     private var correlationAnalysisJob: Job? = null
+    private var lastCorrelationDetectionCount: Int = -1
     private val CORRELATION_ANALYSIS_INTERVAL_MS = 60_000L  // Run correlation analysis every 60 seconds
 
     // Periodic IPC refresh job - ensures UI stays updated even when no events occur
     private var ipcRefreshJob: Job? = null
-    private val IPC_REFRESH_INTERVAL_MS = 5000L  // Refresh every 5 seconds
+    private val IPC_REFRESH_INTERVAL_MS = 30_000L  // Full resync safety net; event updates remain immediate
 
     // Battery monitoring for adaptive scanning
     private var batteryReceiver: BroadcastReceiver? = null
@@ -432,18 +456,22 @@ class ScanningService : Service() {
                             ipcClients.remove(client)
                             threadingMonitor.updateIpcClientCount(ipcClients.size)
                             Log.d(TAG, "IPC client unregistered (total: ${ipcClients.size})")
-                            // Stop IPC refresh if no clients remain
+                            // Stop UI-only background work when no clients remain.
                             if (ipcClients.isEmpty()) {
                                 stopIpcRefreshJob()
+                                threadingMonitor.stopMonitoring()
                             }
                         }
                     }
                     ScanningServiceIpc.MSG_REQUEST_STATE -> {
                         Log.d(TAG, "MSG_REQUEST_STATE received, replyTo=${msg.replyTo}")
                         msg.replyTo?.let { client ->
-                            Log.d(TAG, "Sending state to client...")
+                            // Explicit state requests are the authoritative full-resync path.
+                            // Routine state broadcasts below are intentionally basic-only.
+                            Log.d(TAG, "Sending full state sync to client...")
                             sendStateToClient(client)
-                            Log.d(TAG, "State sent to client")
+                            sendAllDataToClient(client)
+                            Log.d(TAG, "Full state sync sent")
                         } ?: Log.w(TAG, "MSG_REQUEST_STATE received but replyTo is null!")
                     }
                     ScanningServiceIpc.MSG_START_SCANNING -> {
@@ -457,7 +485,7 @@ class ScanningService : Service() {
                         }
                     }
                     ScanningServiceIpc.MSG_CLEAR_SEEN_DEVICES -> {
-                        clearSeenDevices()
+                        clearSeenDeviceRegistries()
                         broadcastSeenBleDevices()
                         broadcastSeenWifiNetworks()
                     }
@@ -497,6 +525,9 @@ class ScanningService : Service() {
                     }
                     ScanningServiceIpc.MSG_REQUEST_THREADING_DATA -> {
                         msg.replyTo?.let { client ->
+                            // Thread/process sampling is diagnostic work, not scanner work.
+                            // Start it only when a diagnostics consumer asks for it.
+                            threadingMonitor.startMonitoring()
                             sendThreadingDataToClient(client)
                         }
                     }
@@ -567,14 +598,8 @@ class ScanningService : Service() {
         // Initialize Rogue WiFi Monitor with error callback
         rogueWifiMonitor = RogueWifiMonitor(applicationContext, detectorCallbackImpl)
 
-        // Initialize RF Signal Analyzer with error callback
-        rfSignalAnalyzer = RfSignalAnalyzer(applicationContext, detectorCallbackImpl)
-
-        // Initialize Ultrasonic Detector with error callback
-        ultrasonicDetector = UltrasonicDetector(applicationContext, detectorCallbackImpl)
-
-        // Initialize GNSS Satellite Monitor with error callback
-        gnssSatelliteMonitor = com.flockyou.monitoring.GnssSatelliteMonitor(applicationContext, detectorCallbackImpl)
+        // RF, ultrasonic and GNSS monitors are intentionally lazy.
+        // Disabled subsystems should not consume startup RAM or threads.
 
         // Initialize Shannon SDM Diagnostic Monitor (OEM only)
         if (com.flockyou.config.OemFeatureFlags.SHANNON_DIAG_ENABLED) {
@@ -754,6 +779,8 @@ class ScanningService : Service() {
     }
 
     private fun updateNotification(contentText: String) {
+        if (contentText == lastNotificationContentText) return
+        lastNotificationContentText = contentText
         val notification = createNotification(contentText)
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.notify(NOTIFICATION_ID, notification)
@@ -949,14 +976,14 @@ class ScanningService : Service() {
         // Start periodic throttle cache cleanup for deduplicator
         startThrottleCleanup()
 
-        // Start periodic IPC refresh to keep UI updated
-        startIpcRefreshJob()
+        // IPC refresh is client-driven. Registration starts it when the first
+        // UI client attaches and unregister stops it when the last client leaves.
 
         // Start cross-domain correlation analysis job
         startCorrelationAnalysisJob()
 
-        // Start threading monitor for scanner performance tracking
-        threadingMonitor.startMonitoring()
+        // Keep counters available, but the 1 Hz heap/thread sampler is started
+        // only by MSG_REQUEST_THREADING_DATA and stops with the last UI client.
         threadingMonitor.updateIpcClientCount(ipcClients.size)
 
         // Warm up the LLM engine in the background for faster FP analysis
@@ -967,10 +994,21 @@ class ScanningService : Service() {
         ServiceRestartReceiver.scheduleHeartbeat(this)
         ServiceRestartReceiver.scheduleJobSchedulerBackup(this)
 
-        // Record heartbeat immediately so watchdog knows we're alive
+        // Record heartbeat immediately so watchdog knows we're alive.
         ServiceRestartReceiver.recordHeartbeat(this)
+        lastHeartbeatRecordElapsed = SystemClock.elapsedRealtime()
 
-        // Start continuous scanning with burst pattern (25s on, 5s cooldown)
+        // One bounded consumer replaces one coroutine per BLE advertisement.
+        // Under overload we prefer fresh observations instead of unbounded scheduler pressure.
+        if (bleProcessorJob?.isActive != true) {
+            bleProcessorJob = serviceScope.launch {
+                for (result in bleResultChannel) {
+                    processBleScanResult(result)
+                }
+            }
+        }
+
+        // Start continuous scanning with burst pattern.
         scanJob = serviceScope.launch {
             var scanCycleCount = 0
             var consecutiveBleErrors = 0
@@ -1013,13 +1051,19 @@ class ScanningService : Service() {
 
                 try {
                     // === HEARTBEAT ===
-                    // Send heartbeat every cycle to prove we're alive
-                    ServiceRestartReceiver.recordHeartbeat(this@ScanningService)
+                    // Persist liveness at watchdog granularity, not every scan cycle.
+                    val heartbeatNow = SystemClock.elapsedRealtime()
+                    if (heartbeatNow - lastHeartbeatRecordElapsed >= HEARTBEAT_RECORD_INTERVAL_MS) {
+                        ServiceRestartReceiver.recordHeartbeat(this@ScanningService)
+                        lastHeartbeatRecordElapsed = heartbeatNow
+                    }
 
                     // === BLE BURST SCAN ===
                     if (scanConfig.enableBle) {
                         try {
-                            startBleScan(scanConfig.aggressiveBleMode)
+                            val aggressiveBle = scanConfig.aggressiveBleMode &&
+                            batteryMode == com.flockyou.data.BatteryAdaptiveMode.PERFORMANCE
+                        startBleScan(aggressiveBle)
                             delay(effectiveBleScanDuration)
                             stopBleScan()
                             consecutiveBleErrors = 0 // Reset on success
@@ -1057,20 +1101,22 @@ class ScanningService : Service() {
                         Log.e(TAG, "Location update error", e)
                     }
 
-                    // Mark old detections as inactive
-                    try {
-                        val inactiveThreshold = System.currentTimeMillis() - scanConfig.inactiveTimeout
-                        repository.markOldInactive(inactiveThreshold)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error marking old detections inactive", e)
-                    }
-
-                    // Clean up old seen devices
-                    if (scanConfig.trackSeenDevices) {
+                    // Housekeeping is not radio-hot-path work. Every fifth cycle is
+                    // sufficient and avoids repeated SQLCipher writes and allocation churn.
+                    if (scanCycleCount % 5 == 0) {
                         try {
-                            cleanupSeenDevices(scanConfig.seenDeviceTimeout)
+                            val inactiveThreshold = System.currentTimeMillis() - scanConfig.inactiveTimeout
+                            repository.markOldInactive(inactiveThreshold)
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error cleaning up seen devices", e)
+                            Log.e(TAG, "Error marking old detections inactive", e)
+                        }
+
+                        if (scanConfig.trackSeenDevices) {
+                            try {
+                                cleanupSeenDevices(scanConfig.seenDeviceTimeout)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error cleaning up seen devices", e)
+                            }
                         }
                     }
 
@@ -1082,18 +1128,20 @@ class ScanningService : Service() {
                         Log.e(TAG, "Error updating notification", e)
                     }
 
-                    // Broadcast all data to IPC clients every scan cycle
-                    try {
-                        broadcastAllDataToClients()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error broadcasting to IPC clients", e)
+                    // Routine scan cycles only need the compact state message.
+                    // Device/anomaly streams already broadcast event-driven updates, and
+                    // the 30-second full resync job repairs any missed client state.
+                    if (ipcClients.isNotEmpty()) {
+                        try {
+                            broadcastStateToClients()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error broadcasting state to IPC clients", e)
+                        }
                     }
 
                     scanCycleCount++
 
-                    // Every 10 cycles, re-schedule the watchdog to ensure it stays active
                     if (scanCycleCount % 10 == 0) {
-                        ServiceRestartReceiver.scheduleWatchdog(this@ScanningService)
                         Log.d(TAG, "Completed $scanCycleCount scan cycles")
                     }
 
@@ -1127,6 +1175,9 @@ class ScanningService : Service() {
         detectionSettingsJob = null
 
         scanJob?.cancel()
+        bleProcessorJob?.cancel()
+        bleProcessorJob = null
+        while (bleResultChannel.tryReceive().isSuccess) { /* drain stale callbacks */ }
         stopBleScan()
         unregisterWifiReceiver()
         stopCellularMonitoring()
@@ -1179,20 +1230,69 @@ class ScanningService : Service() {
 
     // ==================== Seen Device Management ====================
 
+    private fun trimSeenRegistry(registry: java.util.LinkedHashMap<String, SeenDevice>) {
+        while (registry.size > MAX_SEEN_DEVICE_REGISTRY_SIZE) {
+            val iterator = registry.entries.iterator()
+            if (!iterator.hasNext()) break
+            iterator.next()
+            iterator.remove()
+        }
+    }
+
+    private fun clearSeenDeviceRegistries() {
+        seenBlePublishJob?.cancel()
+        seenBlePublishJob = null
+        seenWifiPublishJob?.cancel()
+        seenWifiPublishJob = null
+        synchronized(ScanningServiceState) {
+            seenBleRegistry.clear()
+            seenWifiRegistry.clear()
+            clearSeenDevices()
+        }
+    }
+
     private fun cleanupSeenDevices(timeout: Long) {
         val cutoff = System.currentTimeMillis() - timeout
-        val bleCountBefore = seenBleDevices.value.size
-        val wifiCountBefore = seenWifiNetworks.value.size
+        var bleChanged = false
+        var wifiChanged = false
+
         synchronized(ScanningServiceState) {
-            seenBleDevices.value = seenBleDevices.value.filter { it.lastSeen > cutoff }
-            seenWifiNetworks.value = seenWifiNetworks.value.filter { it.lastSeen > cutoff }
+            val bleBefore = seenBleRegistry.size
+            val bleIterator = seenBleRegistry.entries.iterator()
+            while (bleIterator.hasNext()) {
+                if (bleIterator.next().value.lastSeen <= cutoff) bleIterator.remove()
+            }
+            bleChanged = seenBleRegistry.size != bleBefore
+            if (bleChanged) {
+                seenBleDevices.value = seenBleRegistry.values.toList().asReversed()
+            }
+
+            val wifiBefore = seenWifiRegistry.size
+            val wifiIterator = seenWifiRegistry.entries.iterator()
+            while (wifiIterator.hasNext()) {
+                if (wifiIterator.next().value.lastSeen <= cutoff) wifiIterator.remove()
+            }
+            wifiChanged = seenWifiRegistry.size != wifiBefore
+            if (wifiChanged) {
+                seenWifiNetworks.value = seenWifiRegistry.values.toList().asReversed()
+            }
         }
-        // Broadcast if devices were removed
-        if (seenBleDevices.value.size != bleCountBefore) {
-            broadcastSeenBleDevices()
-        }
-        if (seenWifiNetworks.value.size != wifiCountBefore) {
-            broadcastSeenWifiNetworks()
+
+        if (bleChanged) broadcastSeenBleDevices()
+        if (wifiChanged) broadcastSeenWifiNetworks()
+    }
+
+    private fun scheduleSeenBleSnapshot() {
+        synchronized(ScanningServiceState) {
+            if (seenBlePublishJob?.isActive == true) return
+            seenBlePublishJob = serviceScope.launch {
+                delay(SEEN_DEVICE_BROADCAST_THROTTLE_MS)
+                synchronized(ScanningServiceState) {
+                    seenBleDevices.value = seenBleRegistry.values.toList().asReversed()
+                    seenBlePublishJob = null
+                }
+                broadcastSeenBleDevices()
+            }
         }
     }
 
@@ -1204,31 +1304,25 @@ class ScanningService : Service() {
         manufacturerData: Map<Int, String> = emptyMap(),
         advertisingRate: Float = 0f
     ) {
-        // Synchronize to prevent race conditions when multiple scan results arrive concurrently
-        synchronized(ScanningServiceState) {
-            val currentList = seenBleDevices.value.toMutableList()
-            val existingIndex = currentList.indexOfFirst { it.id == macAddress }
+        val now = System.currentTimeMillis()
 
-            if (existingIndex >= 0) {
-                // Update existing
-                val existing = currentList[existingIndex]
-                currentList[existingIndex] = existing.copy(
+        synchronized(ScanningServiceState) {
+            val existing = seenBleRegistry[macAddress]
+            val updated = if (existing != null) {
+                existing.copy(
                     name = deviceName ?: existing.name,
                     rssi = rssi,
-                    lastSeen = System.currentTimeMillis(),
+                    lastSeen = now,
                     seenCount = existing.seenCount + 1,
                     manufacturerData = if (manufacturerData.isNotEmpty()) manufacturerData else existing.manufacturerData,
                     advertisingRate = advertisingRate
                 )
             } else {
-                // Add new
                 val manufacturer = try {
-                    // Try to identify manufacturer from MAC OUI
-                    val oui = macAddress.take(8).uppercase()
-                    DetectionPatterns.getManufacturerFromOui(oui)
+                    DetectionPatterns.getManufacturerFromOui(macAddress.take(8).uppercase())
                 } catch (e: Exception) { null }
 
-                currentList.add(0, SeenDevice(
+                SeenDevice(
                     id = macAddress,
                     name = deviceName,
                     type = "BLE",
@@ -1237,52 +1331,59 @@ class ScanningService : Service() {
                     serviceUuids = serviceUuids.map { it.toString() },
                     manufacturerData = manufacturerData,
                     advertisingRate = advertisingRate
-                ))
-
-                // Limit list size
-                if (currentList.size > 100) {
-                    currentList.removeAt(currentList.lastIndex)
-                }
+                )
             }
 
-            seenBleDevices.value = currentList
-            broadcastSeenBleDevices()
+            seenBleRegistry[macAddress] = updated
+            trimSeenRegistry(seenBleRegistry)
+        }
+
+        scheduleSeenBleSnapshot()
+    }
+
+    private fun scheduleSeenWifiSnapshot() {
+        synchronized(ScanningServiceState) {
+            if (seenWifiPublishJob?.isActive == true) return
+            seenWifiPublishJob = serviceScope.launch {
+                delay(SEEN_WIFI_PUBLISH_DELAY_MS)
+                synchronized(ScanningServiceState) {
+                    seenWifiNetworks.value = seenWifiRegistry.values.toList().asReversed()
+                    seenWifiPublishJob = null
+                }
+                broadcastSeenWifiNetworks()
+            }
         }
     }
 
     private fun trackSeenWifiNetwork(bssid: String, ssid: String, rssi: Int) {
-        val currentList = seenWifiNetworks.value.toMutableList()
-        val existingIndex = currentList.indexOfFirst { it.id == bssid }
+        val now = System.currentTimeMillis()
+        synchronized(ScanningServiceState) {
+            val existing = seenWifiRegistry[bssid]
+            val updated = if (existing != null) {
+                existing.copy(
+                    name = ssid,
+                    rssi = rssi,
+                    lastSeen = now,
+                    seenCount = existing.seenCount + 1
+                )
+            } else {
+                val manufacturer = try {
+                    DetectionPatterns.getManufacturerFromOui(bssid.take(8).uppercase())
+                } catch (e: Exception) { null }
 
-        if (existingIndex >= 0) {
-            val existing = currentList[existingIndex]
-            currentList[existingIndex] = existing.copy(
-                name = ssid,
-                rssi = rssi,
-                lastSeen = System.currentTimeMillis(),
-                seenCount = existing.seenCount + 1
-            )
-        } else {
-            val manufacturer = try {
-                val oui = bssid.take(8).uppercase()
-                DetectionPatterns.getManufacturerFromOui(oui)
-            } catch (e: Exception) { null }
-
-            currentList.add(0, SeenDevice(
-                id = bssid,
-                name = ssid,
-                type = "WiFi",
-                rssi = rssi,
-                manufacturer = manufacturer
-            ))
-
-            if (currentList.size > 100) {
-                currentList.removeAt(currentList.lastIndex)
+                SeenDevice(
+                    id = bssid,
+                    name = ssid,
+                    type = "WiFi",
+                    rssi = rssi,
+                    manufacturer = manufacturer
+                )
             }
-        }
 
-        seenWifiNetworks.value = currentList
-        broadcastSeenWifiNetworks()
+            seenWifiRegistry[bssid] = updated
+            trimSeenRegistry(seenWifiRegistry)
+        }
+        scheduleSeenWifiSnapshot()
     }
 
     // ==================== Status ====================
@@ -1349,8 +1450,11 @@ class ScanningService : Service() {
 
         // Build aggressive scan settings for maximum detection capability
         val scanSettings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .setReportDelay(0)
+            .setScanMode(
+                if (aggressiveMode) ScanSettings.SCAN_MODE_LOW_LATENCY
+                else ScanSettings.SCAN_MODE_BALANCED
+            )
+            .setReportDelay(if (aggressiveMode) 0L else 500L)
             .apply {
                 if (aggressiveMode) {
                     setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
@@ -1399,20 +1503,15 @@ class ScanningService : Service() {
     private val bleScanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            // Update watchdog timestamp - we're receiving results
             lastBleScanResultTime = System.currentTimeMillis()
             bleWatchdogFailures = 0
-            serviceScope.launch {
-                processBleScanResult(result)
-            }
+            bleResultChannel.trySend(result)
         }
 
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
             lastBleScanResultTime = System.currentTimeMillis()
             bleWatchdogFailures = 0
-            serviceScope.launch {
-                results.forEach { processBleScanResult(it) }
-            }
+            results.forEach { bleResultChannel.trySend(it) }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -1470,7 +1569,11 @@ class ScanningService : Service() {
             bleDevicesSeen = scanStats.value.bleDevicesSeen + 1,
             lastBleSuccessTime = System.currentTimeMillis()
         )
-        broadcastScanStats()
+        val statsNow = System.currentTimeMillis()
+        if (statsNow - lastScanStatsBroadcastTime >= SCAN_STATS_BROADCAST_THROTTLE_MS) {
+            lastScanStatsBroadcastTime = statsNow
+            broadcastScanStats()
+        }
 
         // Report successful scan for health monitoring (throttled to avoid excessive updates)
         val now = System.currentTimeMillis()
@@ -1538,6 +1641,14 @@ class ScanningService : Service() {
     private val MIN_WIFI_SCAN_INTERVAL_MS = 20_000L
     private val MAX_WIFI_SCAN_INTERVAL_MS = 120_000L
 
+    private fun getEffectiveWifiBaseIntervalMs(): Long {
+        val configuredMs = currentScanSettings
+            .getEffectiveWifiInterval(currentBatteryPercent)
+            .toLong() * 1000L
+        val boostedMs = if (isBoostModeActive) (configuredMs * 0.6f).toLong() else configuredMs
+        return boostedMs.coerceIn(MIN_WIFI_SCAN_INTERVAL_MS, MAX_WIFI_SCAN_INTERVAL_MS)
+    }
+
     @SuppressLint("MissingPermission")
     private fun startWifiScan() {
         if (!hasLocationPermissions()) {
@@ -1556,11 +1667,12 @@ class ScanningService : Service() {
         val now = System.currentTimeMillis()
         val timeSinceLastScan = now - lastSuccessfulWifiScanTime
 
+        val baseInterval = getEffectiveWifiBaseIntervalMs()
         val adaptiveInterval = if (wifiScanAttemptsSinceSuccess > 0) {
-            (MIN_WIFI_SCAN_INTERVAL_MS * (1 shl wifiScanAttemptsSinceSuccess.coerceAtMost(3)))
+            (baseInterval * (1L shl wifiScanAttemptsSinceSuccess.coerceAtMost(3)))
                 .coerceAtMost(MAX_WIFI_SCAN_INTERVAL_MS)
         } else {
-            MIN_WIFI_SCAN_INTERVAL_MS
+            baseInterval
         }
 
         if (timeSinceLastScan < adaptiveInterval) {
@@ -1631,7 +1743,9 @@ class ScanningService : Service() {
                         val now = System.currentTimeMillis()
                         if (lastThrottle == null || now - lastThrottle > 60000) {
                             lastWifiThrottleLogTime = now
-                            val nextAllowedIn = MIN_WIFI_SCAN_INTERVAL_MS * (1 shl wifiScanAttemptsSinceSuccess.coerceAtMost(3))
+                            val nextAllowedIn = (getEffectiveWifiBaseIntervalMs() *
+                                (1L shl wifiScanAttemptsSinceSuccess.coerceAtMost(3)))
+                                .coerceAtMost(MAX_WIFI_SCAN_INTERVAL_MS)
                             wifiStatus.value = SubsystemStatus.Error(-2, "Throttled (backoff: ${nextAllowedIn/1000}s)")
                             logError("WiFi", -2, "WiFi scan throttled by system (next attempt in ${nextAllowedIn/1000}s)", recoverable = true)
                         }
@@ -1669,7 +1783,6 @@ class ScanningService : Service() {
         // Update scan stats
         scanStats.value = scanStats.value.copy(
             wifiNetworksSeen = scanStats.value.wifiNetworksSeen + results.size,
-            successfulWifiScans = scanStats.value.successfulWifiScans + 1,
             lastWifiSuccessTime = System.currentTimeMillis()
         )
         broadcastScanStats()
@@ -1854,11 +1967,9 @@ class ScanningService : Service() {
     }
 
     private fun updateEffectiveBatteryMode() {
-        val effectiveMode = if (isCharging) {
-            com.flockyou.data.BatteryAdaptiveMode.PERFORMANCE
-        } else {
-            currentScanSettings.getEffectiveMode(currentBatteryPercent)
-        }
+        // Charging is not a performance capability signal. Respect the operator's
+        // selected mode (or AUTO conservation policy) whether plugged in or not.
+        val effectiveMode = currentScanSettings.getEffectiveMode(currentBatteryPercent)
 
         if (currentBatteryMode.value != effectiveMode) {
             Log.d(TAG, "Battery mode changed: ${currentBatteryMode.value} -> $effectiveMode " +
@@ -1960,6 +2071,12 @@ class ScanningService : Service() {
 
             while (isActive && isScanning.value) {
                 try {
+                    val currentCount = detectionCount.value
+                    if (currentCount == lastCorrelationDetectionCount) {
+                        delay(CORRELATION_ANALYSIS_INTERVAL_MS)
+                        continue
+                    }
+
                     val sinceTimestamp = System.currentTimeMillis() - 10 * 60 * 1000L
                     val recentDetections = if (currentPrivacySettings.ephemeralModeEnabled) {
                         ephemeralRepository.getRecentDetections(sinceTimestamp).first()
@@ -1991,6 +2108,7 @@ class ScanningService : Service() {
                     }
 
                     crossDomainAnalyzer.cleanup()
+                    lastCorrelationDetectionCount = currentCount
 
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in correlation analysis: ${e.message}", e)
@@ -2097,9 +2215,14 @@ class ScanningService : Service() {
             restartSettingsCollectionJobs()
         }
 
-        if (ipcRefreshJob == null || ipcRefreshJob?.isActive != true) {
-            Log.w(TAG, "WATCHDOG: IPC refresh job stopped, restarting...")
-            startIpcRefreshJob()
+        if (ipcClients.isNotEmpty()) {
+            if (ipcRefreshJob == null || ipcRefreshJob?.isActive != true) {
+                Log.w(TAG, "WATCHDOG: IPC refresh job stopped with active clients, restarting...")
+                startIpcRefreshJob()
+            }
+        } else if (ipcRefreshJob?.isActive == true) {
+            Log.d(TAG, "WATCHDOG: no IPC clients; stopping unnecessary refresh job")
+            stopIpcRefreshJob()
         }
 
         if (throttleCleanupJob == null || throttleCleanupJob?.isActive != true) {
