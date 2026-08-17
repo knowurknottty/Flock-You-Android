@@ -6,7 +6,7 @@ on:
       - perf/moto-low-ram-r1
     paths:
       - .github/workflows/perf-moto-low-ram-r1.yml
-      - tools/perf_moto_patch_p2.py
+      - tools/perf_moto_patch_p3.py
   workflow_dispatch: {}
 
 permissions:
@@ -31,8 +31,8 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Apply final scanner churn fixes
-        run: python3 tools/perf_moto_patch_p2.py
+      - name: Apply IPC and diagnostics optimization
+        run: python3 tools/perf_moto_patch_p3.py
 
       - name: Grant Gradle execute permission
         run: chmod +x gradlew
@@ -49,6 +49,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/src/main/java app/src/test/java
           git diff --cached --check
-          git commit -m "perf: eliminate idle scanner churn"
+          git commit -m "perf: reduce IPC and diagnostics overhead"
           git pull --rebase origin perf/moto-low-ram-r1
           git push origin HEAD:perf/moto-low-ram-r1
