@@ -6,7 +6,7 @@ on:
       - perf/moto-low-ram-r1
     paths:
       - .github/workflows/perf-moto-low-ram-r1.yml
-      - tools/perf_moto_patch.py
+      - tools/perf_moto_patch_v2.py
   workflow_dispatch: {}
 
 permissions:
@@ -32,7 +32,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Apply constrained-device patch
-        run: python3 tools/perf_moto_patch.py
+        run: python3 tools/perf_moto_patch_v2.py
 
       - name: Grant Gradle execute permission
         run: chmod +x gradlew
