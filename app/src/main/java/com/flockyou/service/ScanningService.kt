@@ -28,6 +28,7 @@ import com.flockyou.detection.handler.CellularDetectionHandler
 import com.flockyou.detection.handler.SatelliteDetectionHandler
 import com.google.android.gms.location.*
 import com.google.gson.Gson
+import dagger.Lazy
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
@@ -235,7 +236,7 @@ class ScanningService : Service() {
     lateinit var enrichedDataCache: com.flockyou.ai.EnrichedDataCache
 
     @Inject
-    lateinit var llmEngineManager: com.flockyou.ai.LlmEngineManager
+    lateinit var llmEngineManager: Lazy<com.flockyou.ai.LlmEngineManager>
 
     @Inject
     lateinit var deduplicator: com.flockyou.detection.DetectionDeduplicator
@@ -272,9 +273,9 @@ class ScanningService : Service() {
     private var bleProcessorJob: Job? = null
     private val seenBleRegistry = java.util.LinkedHashMap<String, SeenDevice>(128, 0.75f, true)
     private val seenWifiRegistry = java.util.LinkedHashMap<String, SeenDevice>(128, 0.75f, true)
+    private var seenBlePublishJob: Job? = null
     private var seenWifiPublishJob: Job? = null
     private var lastScanStatsBroadcastTime = 0L
-    private var lastSeenBleBroadcastTime = 0L
     private var lastHeartbeatRecordElapsed = 0L
     private var lastNotificationContentText: String? = null
     private val gson = Gson()
@@ -1239,6 +1240,8 @@ class ScanningService : Service() {
     }
 
     private fun clearSeenDeviceRegistries() {
+        seenBlePublishJob?.cancel()
+        seenBlePublishJob = null
         seenWifiPublishJob?.cancel()
         seenWifiPublishJob = null
         synchronized(ScanningServiceState) {
@@ -1279,6 +1282,20 @@ class ScanningService : Service() {
         if (wifiChanged) broadcastSeenWifiNetworks()
     }
 
+    private fun scheduleSeenBleSnapshot() {
+        synchronized(ScanningServiceState) {
+            if (seenBlePublishJob?.isActive == true) return
+            seenBlePublishJob = serviceScope.launch {
+                delay(SEEN_DEVICE_BROADCAST_THROTTLE_MS)
+                synchronized(ScanningServiceState) {
+                    seenBleDevices.value = seenBleRegistry.values.toList().asReversed()
+                    seenBlePublishJob = null
+                }
+                broadcastSeenBleDevices()
+            }
+        }
+    }
+
     private fun trackSeenBleDevice(
         macAddress: String,
         deviceName: String?,
@@ -1288,7 +1305,6 @@ class ScanningService : Service() {
         advertisingRate: Float = 0f
     ) {
         val now = System.currentTimeMillis()
-        var publishSnapshot = false
 
         synchronized(ScanningServiceState) {
             val existing = seenBleRegistry[macAddress]
@@ -1320,15 +1336,9 @@ class ScanningService : Service() {
 
             seenBleRegistry[macAddress] = updated
             trimSeenRegistry(seenBleRegistry)
-
-            if (now - lastSeenBleBroadcastTime >= SEEN_DEVICE_BROADCAST_THROTTLE_MS) {
-                lastSeenBleBroadcastTime = now
-                seenBleDevices.value = seenBleRegistry.values.toList().asReversed()
-                publishSnapshot = true
-            }
         }
 
-        if (publishSnapshot) broadcastSeenBleDevices()
+        scheduleSeenBleSnapshot()
     }
 
     private fun scheduleSeenWifiSnapshot() {

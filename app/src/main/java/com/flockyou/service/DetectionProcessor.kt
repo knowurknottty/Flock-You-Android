@@ -650,9 +650,10 @@ internal fun ScanningService.warmUpLlmEngine() {
 
             Log.i(TAG, "Starting LLM warm-up in background...")
             val startTime = System.currentTimeMillis()
+            val engineManager = llmEngineManager.get()
 
             // Check if LLM engine is available
-            val activeEngine = llmEngineManager.activeEngine.value
+            val activeEngine = engineManager.activeEngine.value
             if (activeEngine == com.flockyou.ai.LlmEngine.RULE_BASED) {
                 Log.d(TAG, "LLM warm-up skipped - using rule-based engine only")
                 return@launch
@@ -661,11 +662,11 @@ internal fun ScanningService.warmUpLlmEngine() {
             // Run a simple test prompt to warm up the model
             // This forces the model to load into memory and JIT compile
             val warmupPrompt = "Classify: Is a device named 'TestDevice' a surveillance device? Answer YES or NO."
-            val response = llmEngineManager.generateResponse(warmupPrompt)
+            val response = engineManager.generateResponse(warmupPrompt)
 
             val elapsed = System.currentTimeMillis() - startTime
             if (response != null) {
-                Log.i(TAG, "LLM warm-up completed in ${elapsed}ms (engine: ${llmEngineManager.activeEngine.value})")
+                Log.i(TAG, "LLM warm-up completed in ${elapsed}ms (engine: ${engineManager.activeEngine.value})")
             } else {
                 Log.w(TAG, "LLM warm-up completed but returned null response (engine may fall back to rule-based)")
             }
