@@ -5,14 +5,11 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.animation.*
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
@@ -30,9 +27,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.flockyou.data.model.*
 import com.flockyou.scanner.flipper.FlipperConnectionState
 import com.flockyou.service.CellularMonitor
+import com.flockyou.privilege.PrivilegeMode
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.res.stringResource
 import com.flockyou.R
@@ -65,13 +64,13 @@ fun MainScreen(
     onNavigateToServiceHealth: () -> Unit = {},
     onNavigateToActiveProbes: () -> Unit = {}
 ) {
-    val uiState by viewModel.uiState.collectAsState()
-    val prioritizedEnrichmentIds by viewModel.prioritizedEnrichmentIds.collectAsState()
-    val flipperUiSettings by viewModel.flipperUiSettings.collectAsState()
-    val flipperSettings by viewModel.flipperSettings.collectAsState()
-    val flipperIsInstalling by viewModel.flipperIsInstalling.collectAsState()
-    val flipperInstallProgress by viewModel.flipperInstallProgress.collectAsState()
-    val relatedDetections by viewModel.relatedDetections.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val prioritizedEnrichmentIds by viewModel.prioritizedEnrichmentIds.collectAsStateWithLifecycle()
+    val flipperUiSettings by viewModel.flipperUiSettings.collectAsStateWithLifecycle()
+    val flipperSettings by viewModel.flipperSettings.collectAsStateWithLifecycle()
+    val flipperIsInstalling by viewModel.flipperIsInstalling.collectAsStateWithLifecycle()
+    val flipperInstallProgress by viewModel.flipperInstallProgress.collectAsStateWithLifecycle()
+    val relatedDetections by viewModel.relatedDetections.collectAsStateWithLifecycle()
 
     // Filtered anomalies (excludes FP-marked detections)
     val filteredCellularAnomalies = remember(uiState.cellularAnomalies, uiState.detections, uiState.hideFalsePositives, uiState.fpFilterThreshold) {
@@ -85,6 +84,9 @@ fun MainScreen(
     }
 
     val context = LocalContext.current
+    val hardwareCapabilities = rememberDeviceHardwareCapabilities()
+    val isConstrainedDevice = rememberConstrainedDevice()
+    val hasExternalRfHardware = uiState.flipperConnectionState == FlipperConnectionState.READY
     var showFilterSheet by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
     var selectedDetection by remember { mutableStateOf<Detection?>(null) }
@@ -138,7 +140,7 @@ fun MainScreen(
         snapshotFlow { pagerState.settledPage }.collectLatest { settledPage ->
             // Only update ViewModel if this wasn't a programmatic navigation
             // and the values are actually different
-            if (!isNavigatingProgrammatically && uiState.selectedTab != settledPage) {
+            if (!isNavigatingProgrammatically && viewModel.uiState.value.selectedTab != settledPage) {
                 viewModel.selectTab(settledPage)
             }
             isNavigatingProgrammatically = false
@@ -229,7 +231,7 @@ fun MainScreen(
             NavigationBar {
                 NavigationBarItem(
                     icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
-                    label = { Text("Home") },
+                    label = { Text("Now") },
                     selected = pagerState.currentPage == 0,
                     onClick = { navigateToPage(0) }
                 )
@@ -369,8 +371,18 @@ fun MainScreen(
                             )
                         }
 
-                        // Cellular status card (show when scanning or has anomalies)
-                        if (uiState.isScanning || filteredCellularAnomalies.isNotEmpty()) {
+                        item(key = "capability_summary") {
+                            CapabilitySummaryCard(
+                                privilegeMode = viewModel.privilegeMode,
+                                hardware = hardwareCapabilities,
+                                isConstrainedDevice = isConstrainedDevice,
+                                hasExternalRfHardware = hasExternalRfHardware
+                            )
+                        }
+
+                        // Keep detailed cellular telemetry out of the default "Now" surface
+                        // unless there is something to inspect or Advanced mode is enabled.
+                        if (filteredCellularAnomalies.isNotEmpty() || uiState.advancedMode) {
                             item(key = "cellular_status_card") {
                                 CellularStatusCard(
                                     cellStatus = uiState.cellStatus,
@@ -383,7 +395,7 @@ fun MainScreen(
                         // Detection Modules section
                         item(key = "detection_modules_header") {
                             Text(
-                                text = "DETECTION MODULES",
+                                text = "SENSORS & TOOLS",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 8.dp)
@@ -396,6 +408,9 @@ fun MainScreen(
                                 onNavigateToUltrasonicDetection = onNavigateToUltrasonicDetection,
                                 onNavigateToSatelliteDetection = onNavigateToSatelliteDetection,
                                 onNavigateToWifiSecurity = onNavigateToWifiSecurity,
+                                privilegeMode = viewModel.privilegeMode,
+                                hardwareCapabilities = hardwareCapabilities,
+                                hasExternalRfHardware = hasExternalRfHardware,
                                 wifiAnomalyCount = filteredRogueWifiAnomalies.size,
                                 rfAnomalyCount = viewModel.getFilteredRfAnomalies().size,
                                 ultrasonicBeaconCount = uiState.ultrasonicBeacons.size,
@@ -1154,7 +1169,11 @@ fun MainScreen(
 
 
 /**
- * Detection modules grid with quick access to specialized detection screens
+ * Detection modules grid with capability-aware quick access.
+ *
+ * The previous UI presented every module as equally available. That is misleading on
+ * normal sideloaded phones and especially on older hardware. These cards now preserve
+ * FeasibilityData's epistemic level and disable truly unavailable surfaces.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1163,16 +1182,56 @@ private fun DetectionModulesGrid(
     onNavigateToUltrasonicDetection: () -> Unit,
     onNavigateToSatelliteDetection: () -> Unit,
     onNavigateToWifiSecurity: () -> Unit,
+    privilegeMode: PrivilegeMode,
+    hardwareCapabilities: DeviceHardwareCapabilities,
+    hasExternalRfHardware: Boolean,
     wifiAnomalyCount: Int,
     rfAnomalyCount: Int,
     ultrasonicBeaconCount: Int,
     satelliteAnomalyCount: Int
 ) {
+    val androidSdk = android.os.Build.VERSION.SDK_INT
+    val wifiCapability = remember(privilegeMode, hardwareCapabilities, androidSdk, hasExternalRfHardware) {
+        resolveCapabilityUiStatus(
+            DetectionProtocol.WIFI,
+            privilegeMode,
+            hardwareCapabilities,
+            androidSdk,
+            hasExternalRfHardware
+        )
+    }
+    val rfCapability = remember(privilegeMode, hardwareCapabilities, androidSdk, hasExternalRfHardware) {
+        resolveCapabilityUiStatus(
+            DetectionProtocol.RF,
+            privilegeMode,
+            hardwareCapabilities,
+            androidSdk,
+            hasExternalRfHardware
+        )
+    }
+    val ultrasonicCapability = remember(privilegeMode, hardwareCapabilities, androidSdk, hasExternalRfHardware) {
+        resolveCapabilityUiStatus(
+            DetectionProtocol.AUDIO,
+            privilegeMode,
+            hardwareCapabilities,
+            androidSdk,
+            hasExternalRfHardware
+        )
+    }
+    val satelliteCapability = remember(privilegeMode, hardwareCapabilities, androidSdk, hasExternalRfHardware) {
+        resolveCapabilityUiStatus(
+            DetectionProtocol.SATELLITE,
+            privilegeMode,
+            hardwareCapabilities,
+            androidSdk,
+            hasExternalRfHardware
+        )
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // First row: WiFi Security & RF Analysis
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1184,6 +1243,7 @@ private fun DetectionModulesGrid(
                 icon = Icons.Default.Wifi,
                 badgeCount = wifiAnomalyCount,
                 iconTint = Color(0xFF2196F3),
+                capability = wifiCapability,
                 onClick = onNavigateToWifiSecurity
             )
             DetectionModuleCard(
@@ -1193,11 +1253,11 @@ private fun DetectionModulesGrid(
                 icon = Icons.Default.Radio,
                 badgeCount = rfAnomalyCount,
                 iconTint = Color(0xFF9C27B0),
+                capability = rfCapability,
                 onClick = onNavigateToRfDetection
             )
         }
 
-        // Second row: Ultrasonic & Satellite
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1209,6 +1269,7 @@ private fun DetectionModulesGrid(
                 icon = Icons.Default.GraphicEq,
                 badgeCount = ultrasonicBeaconCount,
                 iconTint = Color(0xFFFF9800),
+                capability = ultrasonicCapability,
                 onClick = onNavigateToUltrasonicDetection
             )
             DetectionModuleCard(
@@ -1218,6 +1279,7 @@ private fun DetectionModulesGrid(
                 icon = Icons.Default.SatelliteAlt,
                 badgeCount = satelliteAnomalyCount,
                 iconTint = Color(0xFF4CAF50),
+                capability = satelliteCapability,
                 onClick = onNavigateToSatelliteDetection
             )
         }
@@ -1233,46 +1295,43 @@ private fun DetectionModuleCard(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     badgeCount: Int,
     iconTint: Color,
+    capability: CapabilityUiStatus,
     onClick: () -> Unit
 ) {
-    val hasAnomalies = badgeCount > 0
-    // Animate scale for emphasis when there are anomalies
-    val scale by animateFloatAsState(
-        targetValue = if (hasAnomalies) 1.02f else 1f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 300f),
-        label = "module_scale"
-    )
+    val enabled = capability.enabled
+    val hasAnomalies = enabled && badgeCount > 0
+    val effectiveTint = if (enabled) iconTint else MaterialTheme.colorScheme.onSurfaceVariant
+    val capabilityTint = when (capability.level) {
+        com.flockyou.data.FeasibilityLevel.FULL -> MaterialTheme.colorScheme.tertiary
+        com.flockyou.data.FeasibilityLevel.DEGRADED -> MaterialTheme.colorScheme.secondary
+        com.flockyou.data.FeasibilityLevel.HEURISTIC_ONLY -> MaterialTheme.colorScheme.primary
+        com.flockyou.data.FeasibilityLevel.NOT_FEASIBLE -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
 
     Card(
-        modifier = modifier
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .then(
-                if (hasAnomalies) {
-                    Modifier.border(
-                        width = 2.dp,
-                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.6f),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                } else Modifier
-            ),
+        modifier = modifier.then(
+            if (hasAnomalies) {
+                Modifier.border(
+                    width = 2.dp,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(12.dp)
+                )
+            } else Modifier
+        ),
         onClick = onClick,
+        enabled = enabled,
         colors = CardDefaults.cardColors(
-            containerColor = if (hasAnomalies) {
-                iconTint.copy(alpha = 0.2f)
-            } else {
-                iconTint.copy(alpha = 0.1f)
+            containerColor = when {
+                !enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                hasAnomalies -> iconTint.copy(alpha = 0.2f)
+                else -> iconTint.copy(alpha = 0.1f)
             }
         ),
         elevation = CardDefaults.cardElevation(
-            defaultElevation = if (hasAnomalies) 4.dp else 0.dp
+            defaultElevation = if (hasAnomalies) 3.dp else 0.dp
         )
     ) {
-        Column(
-            modifier = Modifier.padding(12.dp)
-        ) {
+        Column(modifier = Modifier.padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1281,37 +1340,48 @@ private fun DetectionModuleCard(
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = iconTint,
-                    modifier = Modifier.size(if (hasAnomalies) 32.dp else 28.dp)
+                    tint = effectiveTint,
+                    modifier = Modifier.size(28.dp)
                 )
                 if (hasAnomalies) {
-                    Badge(
-                        containerColor = MaterialTheme.colorScheme.error
-                    ) {
-                        Text(
-                            text = badgeCount.toString(),
-                            fontWeight = FontWeight.Bold
-                        )
+                    Badge(containerColor = MaterialTheme.colorScheme.error) {
+                        Text(text = badgeCount.toString(), fontWeight = FontWeight.Bold)
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
-                color = if (hasAnomalies) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface
+                color = if (enabled) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Text(
-                text = if (hasAnomalies) "$badgeCount anomal${if (badgeCount > 1) "ies" else "y"} detected" else description,
+                text = when {
+                    !enabled -> capability.detail
+                    hasAnomalies -> "$badgeCount anomal${if (badgeCount > 1) "ies" else "y"} detected"
+                    else -> description
+                },
                 style = MaterialTheme.typography.labelSmall,
-                color = if (hasAnomalies) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = when {
+                    !enabled -> MaterialTheme.colorScheme.onSurfaceVariant
+                    hasAnomalies -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
                 fontWeight = if (hasAnomalies) FontWeight.Medium else FontWeight.Normal,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis
+            )
+
+            Spacer(modifier = Modifier.height(5.dp))
+            Text(
+                text = capability.statusLabel.uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = capabilityTint
             )
         }
     }
