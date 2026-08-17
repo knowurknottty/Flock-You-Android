@@ -125,6 +125,7 @@ class ScanningService : Service() {
         private const val BLE_HEALTH_UPDATE_THROTTLE_MS = 5_000L
         private const val SCAN_STATS_BROADCAST_THROTTLE_MS = 1_500L
         private const val SEEN_DEVICE_BROADCAST_THROTTLE_MS = 750L
+        private const val HEARTBEAT_RECORD_INTERVAL_MS = 60_000L
         private const val BLE_WATCHDOG_THRESHOLD_MS = 60_000L
         private const val BLE_WATCHDOG_MAX_FAILURES = 3
 
@@ -269,6 +270,8 @@ class ScanningService : Service() {
     private var bleProcessorJob: Job? = null
     private var lastScanStatsBroadcastTime = 0L
     private var lastSeenBleBroadcastTime = 0L
+    private var lastHeartbeatRecordElapsed = 0L
+    private var lastNotificationContentText: String? = null
     private val gson = Gson()
 
     // Bluetooth
@@ -762,6 +765,8 @@ class ScanningService : Service() {
     }
 
     private fun updateNotification(contentText: String) {
+        if (contentText == lastNotificationContentText) return
+        lastNotificationContentText = contentText
         val notification = createNotification(contentText)
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.notify(NOTIFICATION_ID, notification)
@@ -975,8 +980,9 @@ class ScanningService : Service() {
         ServiceRestartReceiver.scheduleHeartbeat(this)
         ServiceRestartReceiver.scheduleJobSchedulerBackup(this)
 
-        // Record heartbeat immediately so watchdog knows we're alive
+        // Record heartbeat immediately so watchdog knows we're alive.
         ServiceRestartReceiver.recordHeartbeat(this)
+        lastHeartbeatRecordElapsed = SystemClock.elapsedRealtime()
 
         // One bounded consumer replaces one coroutine per BLE advertisement.
         // Under overload we prefer fresh observations instead of unbounded scheduler pressure.
@@ -1031,8 +1037,12 @@ class ScanningService : Service() {
 
                 try {
                     // === HEARTBEAT ===
-                    // Send heartbeat every cycle to prove we're alive
-                    ServiceRestartReceiver.recordHeartbeat(this@ScanningService)
+                    // Persist liveness at watchdog granularity, not every scan cycle.
+                    val heartbeatNow = SystemClock.elapsedRealtime()
+                    if (heartbeatNow - lastHeartbeatRecordElapsed >= HEARTBEAT_RECORD_INTERVAL_MS) {
+                        ServiceRestartReceiver.recordHeartbeat(this@ScanningService)
+                        lastHeartbeatRecordElapsed = heartbeatNow
+                    }
 
                     // === BLE BURST SCAN ===
                     if (scanConfig.enableBle) {
@@ -1115,9 +1125,7 @@ class ScanningService : Service() {
 
                     scanCycleCount++
 
-                    // Every 10 cycles, re-schedule the watchdog to ensure it stays active
                     if (scanCycleCount % 10 == 0) {
-                        ServiceRestartReceiver.scheduleWatchdog(this@ScanningService)
                         Log.d(TAG, "Completed $scanCycleCount scan cycles")
                     }
 
@@ -1887,11 +1895,9 @@ class ScanningService : Service() {
     }
 
     private fun updateEffectiveBatteryMode() {
-        val effectiveMode = if (isCharging) {
-            com.flockyou.data.BatteryAdaptiveMode.PERFORMANCE
-        } else {
-            currentScanSettings.getEffectiveMode(currentBatteryPercent)
-        }
+        // Charging is not a performance capability signal. Respect the operator's
+        // selected mode (or AUTO conservation policy) whether plugged in or not.
+        val effectiveMode = currentScanSettings.getEffectiveMode(currentBatteryPercent)
 
         if (currentBatteryMode.value != effectiveMode) {
             Log.d(TAG, "Battery mode changed: ${currentBatteryMode.value} -> $effectiveMode " +
@@ -2130,9 +2136,14 @@ class ScanningService : Service() {
             restartSettingsCollectionJobs()
         }
 
-        if (ipcRefreshJob == null || ipcRefreshJob?.isActive != true) {
-            Log.w(TAG, "WATCHDOG: IPC refresh job stopped, restarting...")
-            startIpcRefreshJob()
+        if (ipcClients.isNotEmpty()) {
+            if (ipcRefreshJob == null || ipcRefreshJob?.isActive != true) {
+                Log.w(TAG, "WATCHDOG: IPC refresh job stopped with active clients, restarting...")
+                startIpcRefreshJob()
+            }
+        } else if (ipcRefreshJob?.isActive == true) {
+            Log.d(TAG, "WATCHDOG: no IPC clients; stopping unnecessary refresh job")
+            stopIpcRefreshJob()
         }
 
         if (throttleCleanupJob == null || throttleCleanupJob?.isActive != true) {
