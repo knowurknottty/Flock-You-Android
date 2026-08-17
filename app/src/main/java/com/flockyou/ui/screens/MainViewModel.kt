@@ -40,6 +40,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import dagger.Lazy
 import javax.inject.Inject
 
 /**
@@ -189,7 +190,7 @@ class MainViewModel @Inject constructor(
     internal val orbotHelper: OrbotHelper,
     internal val torAwareHttpClient: TorAwareHttpClient,
     internal val workManager: WorkManager,
-    internal val detectionAnalyzer: com.flockyou.ai.DetectionAnalyzer,
+    internal val detectionAnalyzerLazy: Lazy<com.flockyou.ai.DetectionAnalyzer>,
     internal val crossDomainAnalyzer: com.flockyou.ai.correlation.CrossDomainAnalyzer,
     internal val serviceConnection: ScanningServiceConnection,  // Injected singleton
     internal val flipperScannerManager: FlipperScannerManager,  // Flipper Zero integration
@@ -201,6 +202,11 @@ class MainViewModel @Inject constructor(
 
     internal val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    // Keep existing extension/call sites source-compatible while deferring the
+    // heavyweight AI graph until an AI feature actually asks for it.
+    internal val detectionAnalyzer: com.flockyou.ai.DetectionAnalyzer
+        get() = detectionAnalyzerLazy.get()
 
     // Privilege mode for feasibility-aware UI
     val privilegeMode: com.flockyou.privilege.PrivilegeMode =

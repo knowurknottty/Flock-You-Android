@@ -1,5 +1,6 @@
 package com.flockyou.data
 
+import android.app.ActivityManager
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
@@ -80,8 +81,9 @@ enum class BatteryAdaptiveMode(
         fun forBatteryLevel(batteryPercent: Int): BatteryAdaptiveMode = when {
             batteryPercent <= MINIMAL.batteryThreshold -> MINIMAL
             batteryPercent <= BATTERY_SAVER.batteryThreshold -> BATTERY_SAVER
-            batteryPercent <= BALANCED.batteryThreshold -> BALANCED
-            else -> PERFORMANCE
+            // AUTO is conservation-only. PERFORMANCE is explicit opt-in.
+            // Battery charge is not a proxy for device performance.
+            else -> BALANCED
         }
     }
 }
@@ -152,6 +154,31 @@ data class ScanSettings(
 class ScanSettingsRepository @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    private val constrainedDeviceDefaults: ScanSettings by lazy {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memoryInfo = ActivityManager.MemoryInfo().also(am::getMemoryInfo)
+        val fourGiB = 4L * 1024L * 1024L * 1024L
+        val constrained = am.isLowRamDevice || am.memoryClass <= 256 || memoryInfo.totalMem <= fourGiB
+
+        if (constrained) {
+            ScanSettings(
+                wifiScanIntervalSeconds = 45,
+                bleScanDurationSeconds = 8,
+                inactiveTimeoutSeconds = 90,
+                rfScanIntervalSeconds = 60,
+                ultrasonicScanIntervalSeconds = 60,
+                ultrasonicScanDurationSeconds = 4,
+                gnssScanIntervalSeconds = 10,
+                satelliteScanIntervalSeconds = 30,
+                cellularScanIntervalSeconds = 10,
+                batteryAdaptiveMode = "balanced",
+                autoBatteryAdaptive = true
+            )
+        } else {
+            ScanSettings()
+        }
+    }
+
     private object PreferencesKeys {
         val WIFI_SCAN_INTERVAL = intPreferencesKey("wifi_scan_interval_seconds")
         val BLE_SCAN_DURATION = intPreferencesKey("ble_scan_duration_seconds")
@@ -176,22 +203,23 @@ class ScanSettingsRepository @Inject constructor(
     }
     
     val settings: Flow<ScanSettings> = context.dataStore.data.map { preferences ->
+        val defaults = constrainedDeviceDefaults
         ScanSettings(
-            wifiScanIntervalSeconds = preferences[PreferencesKeys.WIFI_SCAN_INTERVAL] ?: 25,
-            bleScanDurationSeconds = preferences[PreferencesKeys.BLE_SCAN_DURATION] ?: 10,
-            inactiveTimeoutSeconds = preferences[PreferencesKeys.INACTIVE_TIMEOUT] ?: 60,
-            seenDeviceTimeoutMinutes = preferences[PreferencesKeys.SEEN_DEVICE_TIMEOUT] ?: 5,
-            enableBleScanning = preferences[PreferencesKeys.ENABLE_BLE] ?: true,
-            enableWifiScanning = preferences[PreferencesKeys.ENABLE_WIFI] ?: true,
-            trackSeenDevices = preferences[PreferencesKeys.TRACK_SEEN_DEVICES] ?: true,
-            rfScanIntervalSeconds = preferences[PreferencesKeys.RF_SCAN_INTERVAL] ?: 15,
-            ultrasonicScanIntervalSeconds = preferences[PreferencesKeys.ULTRASONIC_SCAN_INTERVAL] ?: 20,
-            ultrasonicScanDurationSeconds = preferences[PreferencesKeys.ULTRASONIC_SCAN_DURATION] ?: 5,
-            gnssScanIntervalSeconds = preferences[PreferencesKeys.GNSS_SCAN_INTERVAL] ?: 3,
-            satelliteScanIntervalSeconds = preferences[PreferencesKeys.SATELLITE_SCAN_INTERVAL] ?: 5,
-            cellularScanIntervalSeconds = preferences[PreferencesKeys.CELLULAR_SCAN_INTERVAL] ?: 3,
-            batteryAdaptiveMode = preferences[PreferencesKeys.BATTERY_ADAPTIVE_MODE] ?: "balanced",
-            autoBatteryAdaptive = preferences[PreferencesKeys.AUTO_BATTERY_ADAPTIVE] ?: true
+            wifiScanIntervalSeconds = preferences[PreferencesKeys.WIFI_SCAN_INTERVAL] ?: defaults.wifiScanIntervalSeconds,
+            bleScanDurationSeconds = preferences[PreferencesKeys.BLE_SCAN_DURATION] ?: defaults.bleScanDurationSeconds,
+            inactiveTimeoutSeconds = preferences[PreferencesKeys.INACTIVE_TIMEOUT] ?: defaults.inactiveTimeoutSeconds,
+            seenDeviceTimeoutMinutes = preferences[PreferencesKeys.SEEN_DEVICE_TIMEOUT] ?: defaults.seenDeviceTimeoutMinutes,
+            enableBleScanning = preferences[PreferencesKeys.ENABLE_BLE] ?: defaults.enableBleScanning,
+            enableWifiScanning = preferences[PreferencesKeys.ENABLE_WIFI] ?: defaults.enableWifiScanning,
+            trackSeenDevices = preferences[PreferencesKeys.TRACK_SEEN_DEVICES] ?: defaults.trackSeenDevices,
+            rfScanIntervalSeconds = preferences[PreferencesKeys.RF_SCAN_INTERVAL] ?: defaults.rfScanIntervalSeconds,
+            ultrasonicScanIntervalSeconds = preferences[PreferencesKeys.ULTRASONIC_SCAN_INTERVAL] ?: defaults.ultrasonicScanIntervalSeconds,
+            ultrasonicScanDurationSeconds = preferences[PreferencesKeys.ULTRASONIC_SCAN_DURATION] ?: defaults.ultrasonicScanDurationSeconds,
+            gnssScanIntervalSeconds = preferences[PreferencesKeys.GNSS_SCAN_INTERVAL] ?: defaults.gnssScanIntervalSeconds,
+            satelliteScanIntervalSeconds = preferences[PreferencesKeys.SATELLITE_SCAN_INTERVAL] ?: defaults.satelliteScanIntervalSeconds,
+            cellularScanIntervalSeconds = preferences[PreferencesKeys.CELLULAR_SCAN_INTERVAL] ?: defaults.cellularScanIntervalSeconds,
+            batteryAdaptiveMode = preferences[PreferencesKeys.BATTERY_ADAPTIVE_MODE] ?: defaults.batteryAdaptiveMode,
+            autoBatteryAdaptive = preferences[PreferencesKeys.AUTO_BATTERY_ADAPTIVE] ?: defaults.autoBatteryAdaptive
         )
     }
     

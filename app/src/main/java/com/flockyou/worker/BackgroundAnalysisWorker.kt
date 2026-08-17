@@ -392,6 +392,14 @@ class BackgroundAnalysisWorker @AssistedInject constructor(
         val priorityMode = inputData.getString(KEY_PRIORITY_MODE) ?: PRIORITY_NORMAL
         val specificDetectionIds = inputData.getStringArray(KEY_DETECTION_IDS)?.toList()
 
+        val aiSettings = aiSettingsRepository.settings.first()
+        if (!aiSettings.enabled) {
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "AI analysis disabled; skipping worker before foreground promotion")
+            }
+            return@withContext Result.success()
+        }
+
         // For high-priority analysis or specific detections, run as foreground service
         // to ensure execution even when screen is off (Doze mode)
         val needsForeground = priorityMode == PRIORITY_HIGH ||
@@ -416,18 +424,7 @@ class BackgroundAnalysisWorker @AssistedInject constructor(
         }
 
         try {
-            // Check if AI analysis is enabled
-            // Note: Specific detection triggers bypass the master AI switch since rule-based
-            // analysis is always useful and the LLM will fall back to rule-based if needed
-            val aiSettings = aiSettingsRepository.settings.first()
             val isSpecificDetectionTrigger = !specificDetectionIds.isNullOrEmpty()
-
-            if (!aiSettings.enabled && !isSpecificDetectionTrigger) {
-                if (BuildConfig.DEBUG) {
-                    Log.d(TAG, "AI analysis is disabled, skipping background analysis")
-                }
-                return@withContext Result.success()
-            }
 
             // Check if FP filtering is enabled (but allow specific triggers to proceed)
             if (!aiSettings.enableFalsePositiveFiltering && !isSpecificDetectionTrigger) {

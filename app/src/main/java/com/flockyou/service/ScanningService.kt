@@ -30,6 +30,8 @@ import com.google.android.gms.location.*
 import com.google.gson.Gson
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import java.util.*
 import java.util.concurrent.atomic.AtomicInteger
@@ -121,6 +123,8 @@ class ScanningService : Service() {
         private const val HEALTH_CHECK_INTERVAL_MS = 30_000L
         private const val DETECTOR_STALE_THRESHOLD_MS = 120_000L
         private const val BLE_HEALTH_UPDATE_THROTTLE_MS = 5_000L
+        private const val SCAN_STATS_BROADCAST_THROTTLE_MS = 1_500L
+        private const val SEEN_DEVICE_BROADCAST_THROTTLE_MS = 750L
         private const val BLE_WATCHDOG_THRESHOLD_MS = 60_000L
         private const val BLE_WATCHDOG_MAX_FAILURES = 3
 
@@ -163,6 +167,9 @@ class ScanningService : Service() {
 
     @Inject
     lateinit var privacySettingsRepository: com.flockyou.data.PrivacySettingsRepository
+
+    @Inject
+    lateinit var aiSettingsRepository: com.flockyou.data.AiSettingsRepository
 
     @Inject
     lateinit var scanSettingsRepository: com.flockyou.data.ScanSettingsRepository
@@ -255,6 +262,13 @@ class ScanningService : Service() {
     private var nukeReceiver: BroadcastReceiver? = null
 
     internal val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val bleResultChannel = Channel<ScanResult>(
+        capacity = 128,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    private var bleProcessorJob: Job? = null
+    private var lastScanStatsBroadcastTime = 0L
+    private var lastSeenBleBroadcastTime = 0L
     private val gson = Gson()
 
     // Bluetooth
@@ -567,14 +581,8 @@ class ScanningService : Service() {
         // Initialize Rogue WiFi Monitor with error callback
         rogueWifiMonitor = RogueWifiMonitor(applicationContext, detectorCallbackImpl)
 
-        // Initialize RF Signal Analyzer with error callback
-        rfSignalAnalyzer = RfSignalAnalyzer(applicationContext, detectorCallbackImpl)
-
-        // Initialize Ultrasonic Detector with error callback
-        ultrasonicDetector = UltrasonicDetector(applicationContext, detectorCallbackImpl)
-
-        // Initialize GNSS Satellite Monitor with error callback
-        gnssSatelliteMonitor = com.flockyou.monitoring.GnssSatelliteMonitor(applicationContext, detectorCallbackImpl)
+        // RF, ultrasonic and GNSS monitors are intentionally lazy.
+        // Disabled subsystems should not consume startup RAM or threads.
 
         // Initialize Shannon SDM Diagnostic Monitor (OEM only)
         if (com.flockyou.config.OemFeatureFlags.SHANNON_DIAG_ENABLED) {
@@ -949,8 +957,8 @@ class ScanningService : Service() {
         // Start periodic throttle cache cleanup for deduplicator
         startThrottleCleanup()
 
-        // Start periodic IPC refresh to keep UI updated
-        startIpcRefreshJob()
+        // IPC refresh is client-driven. Registration starts it when the first
+        // UI client attaches and unregister stops it when the last client leaves.
 
         // Start cross-domain correlation analysis job
         startCorrelationAnalysisJob()
@@ -970,7 +978,17 @@ class ScanningService : Service() {
         // Record heartbeat immediately so watchdog knows we're alive
         ServiceRestartReceiver.recordHeartbeat(this)
 
-        // Start continuous scanning with burst pattern (25s on, 5s cooldown)
+        // One bounded consumer replaces one coroutine per BLE advertisement.
+        // Under overload we prefer fresh observations instead of unbounded scheduler pressure.
+        if (bleProcessorJob?.isActive != true) {
+            bleProcessorJob = serviceScope.launch {
+                for (result in bleResultChannel) {
+                    processBleScanResult(result)
+                }
+            }
+        }
+
+        // Start continuous scanning with burst pattern.
         scanJob = serviceScope.launch {
             var scanCycleCount = 0
             var consecutiveBleErrors = 0
@@ -1019,7 +1037,9 @@ class ScanningService : Service() {
                     // === BLE BURST SCAN ===
                     if (scanConfig.enableBle) {
                         try {
-                            startBleScan(scanConfig.aggressiveBleMode)
+                            val aggressiveBle = scanConfig.aggressiveBleMode &&
+                            batteryMode == com.flockyou.data.BatteryAdaptiveMode.PERFORMANCE
+                        startBleScan(aggressiveBle)
                             delay(effectiveBleScanDuration)
                             stopBleScan()
                             consecutiveBleErrors = 0 // Reset on success
@@ -1057,20 +1077,22 @@ class ScanningService : Service() {
                         Log.e(TAG, "Location update error", e)
                     }
 
-                    // Mark old detections as inactive
-                    try {
-                        val inactiveThreshold = System.currentTimeMillis() - scanConfig.inactiveTimeout
-                        repository.markOldInactive(inactiveThreshold)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error marking old detections inactive", e)
-                    }
-
-                    // Clean up old seen devices
-                    if (scanConfig.trackSeenDevices) {
+                    // Housekeeping is not radio-hot-path work. Every fifth cycle is
+                    // sufficient and avoids repeated SQLCipher writes and allocation churn.
+                    if (scanCycleCount % 5 == 0) {
                         try {
-                            cleanupSeenDevices(scanConfig.seenDeviceTimeout)
+                            val inactiveThreshold = System.currentTimeMillis() - scanConfig.inactiveTimeout
+                            repository.markOldInactive(inactiveThreshold)
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error cleaning up seen devices", e)
+                            Log.e(TAG, "Error marking old detections inactive", e)
+                        }
+
+                        if (scanConfig.trackSeenDevices) {
+                            try {
+                                cleanupSeenDevices(scanConfig.seenDeviceTimeout)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error cleaning up seen devices", e)
+                            }
                         }
                     }
 
@@ -1082,11 +1104,13 @@ class ScanningService : Service() {
                         Log.e(TAG, "Error updating notification", e)
                     }
 
-                    // Broadcast all data to IPC clients every scan cycle
-                    try {
-                        broadcastAllDataToClients()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error broadcasting to IPC clients", e)
+                    // No attached UI means no broad IPC serialization work.
+                    if (ipcClients.isNotEmpty()) {
+                        try {
+                            broadcastAllDataToClients()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error broadcasting to IPC clients", e)
+                        }
                     }
 
                     scanCycleCount++
@@ -1127,6 +1151,9 @@ class ScanningService : Service() {
         detectionSettingsJob = null
 
         scanJob?.cancel()
+        bleProcessorJob?.cancel()
+        bleProcessorJob = null
+        while (bleResultChannel.tryReceive().isSuccess) { /* drain stale callbacks */ }
         stopBleScan()
         unregisterWifiReceiver()
         stopCellularMonitoring()
@@ -1246,7 +1273,11 @@ class ScanningService : Service() {
             }
 
             seenBleDevices.value = currentList
-            broadcastSeenBleDevices()
+            val now = System.currentTimeMillis()
+            if (now - lastSeenBleBroadcastTime >= SEEN_DEVICE_BROADCAST_THROTTLE_MS) {
+                lastSeenBleBroadcastTime = now
+                broadcastSeenBleDevices()
+            }
         }
     }
 
@@ -1349,8 +1380,11 @@ class ScanningService : Service() {
 
         // Build aggressive scan settings for maximum detection capability
         val scanSettings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .setReportDelay(0)
+            .setScanMode(
+                if (aggressiveMode) ScanSettings.SCAN_MODE_LOW_LATENCY
+                else ScanSettings.SCAN_MODE_BALANCED
+            )
+            .setReportDelay(if (aggressiveMode) 0L else 500L)
             .apply {
                 if (aggressiveMode) {
                     setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
@@ -1399,20 +1433,15 @@ class ScanningService : Service() {
     private val bleScanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            // Update watchdog timestamp - we're receiving results
             lastBleScanResultTime = System.currentTimeMillis()
             bleWatchdogFailures = 0
-            serviceScope.launch {
-                processBleScanResult(result)
-            }
+            bleResultChannel.trySend(result)
         }
 
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
             lastBleScanResultTime = System.currentTimeMillis()
             bleWatchdogFailures = 0
-            serviceScope.launch {
-                results.forEach { processBleScanResult(it) }
-            }
+            results.forEach { bleResultChannel.trySend(it) }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -1470,7 +1499,11 @@ class ScanningService : Service() {
             bleDevicesSeen = scanStats.value.bleDevicesSeen + 1,
             lastBleSuccessTime = System.currentTimeMillis()
         )
-        broadcastScanStats()
+        val statsNow = System.currentTimeMillis()
+        if (statsNow - lastScanStatsBroadcastTime >= SCAN_STATS_BROADCAST_THROTTLE_MS) {
+            lastScanStatsBroadcastTime = statsNow
+            broadcastScanStats()
+        }
 
         // Report successful scan for health monitoring (throttled to avoid excessive updates)
         val now = System.currentTimeMillis()

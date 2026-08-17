@@ -26,6 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import dagger.Lazy
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -48,7 +49,7 @@ class FlockYouApplication : Application(), Configuration.Provider {
     lateinit var aiSettingsRepository: AiSettingsRepository
 
     @Inject
-    lateinit var detectionAnalyzer: DetectionAnalyzer
+    lateinit var detectionAnalyzer: Lazy<DetectionAnalyzer>
 
     @Inject
     lateinit var nukeSettingsRepository: NukeSettingsRepository
@@ -220,7 +221,7 @@ class FlockYouApplication : Application(), Configuration.Provider {
 
         // Initialize the AI model if AI analysis is enabled
         if (settings.enabled) {
-            detectionAnalyzer.initializeModel()
+            detectionAnalyzer.get().initializeModel()
 
             // Schedule background analysis if FP filtering is enabled
             if (settings.enableFalsePositiveFiltering) {
