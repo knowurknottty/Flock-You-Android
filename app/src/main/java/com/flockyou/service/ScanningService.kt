@@ -125,6 +125,8 @@ class ScanningService : Service() {
         private const val BLE_HEALTH_UPDATE_THROTTLE_MS = 5_000L
         private const val SCAN_STATS_BROADCAST_THROTTLE_MS = 1_500L
         private const val SEEN_DEVICE_BROADCAST_THROTTLE_MS = 750L
+        private const val SEEN_WIFI_PUBLISH_DELAY_MS = 250L
+        private const val MAX_SEEN_DEVICE_REGISTRY_SIZE = 100
         private const val HEARTBEAT_RECORD_INTERVAL_MS = 60_000L
         private const val BLE_WATCHDOG_THRESHOLD_MS = 60_000L
         private const val BLE_WATCHDOG_MAX_FAILURES = 3
@@ -268,6 +270,9 @@ class ScanningService : Service() {
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     private var bleProcessorJob: Job? = null
+    private val seenBleRegistry = java.util.LinkedHashMap<String, SeenDevice>(128, 0.75f, true)
+    private val seenWifiRegistry = java.util.LinkedHashMap<String, SeenDevice>(128, 0.75f, true)
+    private var seenWifiPublishJob: Job? = null
     private var lastScanStatsBroadcastTime = 0L
     private var lastSeenBleBroadcastTime = 0L
     private var lastHeartbeatRecordElapsed = 0L
@@ -343,6 +348,7 @@ class ScanningService : Service() {
 
     // Cross-domain correlation analysis job
     private var correlationAnalysisJob: Job? = null
+    private var lastCorrelationDetectionCount: Int = -1
     private val CORRELATION_ANALYSIS_INTERVAL_MS = 60_000L  // Run correlation analysis every 60 seconds
 
     // Periodic IPC refresh job - ensures UI stays updated even when no events occur
@@ -478,7 +484,7 @@ class ScanningService : Service() {
                         }
                     }
                     ScanningServiceIpc.MSG_CLEAR_SEEN_DEVICES -> {
-                        clearSeenDevices()
+                        clearSeenDeviceRegistries()
                         broadcastSeenBleDevices()
                         broadcastSeenWifiNetworks()
                     }
@@ -1223,21 +1229,54 @@ class ScanningService : Service() {
 
     // ==================== Seen Device Management ====================
 
+    private fun trimSeenRegistry(registry: java.util.LinkedHashMap<String, SeenDevice>) {
+        while (registry.size > MAX_SEEN_DEVICE_REGISTRY_SIZE) {
+            val iterator = registry.entries.iterator()
+            if (!iterator.hasNext()) break
+            iterator.next()
+            iterator.remove()
+        }
+    }
+
+    private fun clearSeenDeviceRegistries() {
+        seenWifiPublishJob?.cancel()
+        seenWifiPublishJob = null
+        synchronized(ScanningServiceState) {
+            seenBleRegistry.clear()
+            seenWifiRegistry.clear()
+            clearSeenDevices()
+        }
+    }
+
     private fun cleanupSeenDevices(timeout: Long) {
         val cutoff = System.currentTimeMillis() - timeout
-        val bleCountBefore = seenBleDevices.value.size
-        val wifiCountBefore = seenWifiNetworks.value.size
+        var bleChanged = false
+        var wifiChanged = false
+
         synchronized(ScanningServiceState) {
-            seenBleDevices.value = seenBleDevices.value.filter { it.lastSeen > cutoff }
-            seenWifiNetworks.value = seenWifiNetworks.value.filter { it.lastSeen > cutoff }
+            val bleBefore = seenBleRegistry.size
+            val bleIterator = seenBleRegistry.entries.iterator()
+            while (bleIterator.hasNext()) {
+                if (bleIterator.next().value.lastSeen <= cutoff) bleIterator.remove()
+            }
+            bleChanged = seenBleRegistry.size != bleBefore
+            if (bleChanged) {
+                seenBleDevices.value = seenBleRegistry.values.toList().asReversed()
+            }
+
+            val wifiBefore = seenWifiRegistry.size
+            val wifiIterator = seenWifiRegistry.entries.iterator()
+            while (wifiIterator.hasNext()) {
+                if (wifiIterator.next().value.lastSeen <= cutoff) wifiIterator.remove()
+            }
+            wifiChanged = seenWifiRegistry.size != wifiBefore
+            if (wifiChanged) {
+                seenWifiNetworks.value = seenWifiRegistry.values.toList().asReversed()
+            }
         }
-        // Broadcast if devices were removed
-        if (seenBleDevices.value.size != bleCountBefore) {
-            broadcastSeenBleDevices()
-        }
-        if (seenWifiNetworks.value.size != wifiCountBefore) {
-            broadcastSeenWifiNetworks()
-        }
+
+        if (bleChanged) broadcastSeenBleDevices()
+        if (wifiChanged) broadcastSeenWifiNetworks()
     }
 
     private fun trackSeenBleDevice(
@@ -1248,31 +1287,26 @@ class ScanningService : Service() {
         manufacturerData: Map<Int, String> = emptyMap(),
         advertisingRate: Float = 0f
     ) {
-        // Synchronize to prevent race conditions when multiple scan results arrive concurrently
-        synchronized(ScanningServiceState) {
-            val currentList = seenBleDevices.value.toMutableList()
-            val existingIndex = currentList.indexOfFirst { it.id == macAddress }
+        val now = System.currentTimeMillis()
+        var publishSnapshot = false
 
-            if (existingIndex >= 0) {
-                // Update existing
-                val existing = currentList[existingIndex]
-                currentList[existingIndex] = existing.copy(
+        synchronized(ScanningServiceState) {
+            val existing = seenBleRegistry[macAddress]
+            val updated = if (existing != null) {
+                existing.copy(
                     name = deviceName ?: existing.name,
                     rssi = rssi,
-                    lastSeen = System.currentTimeMillis(),
+                    lastSeen = now,
                     seenCount = existing.seenCount + 1,
                     manufacturerData = if (manufacturerData.isNotEmpty()) manufacturerData else existing.manufacturerData,
                     advertisingRate = advertisingRate
                 )
             } else {
-                // Add new
                 val manufacturer = try {
-                    // Try to identify manufacturer from MAC OUI
-                    val oui = macAddress.take(8).uppercase()
-                    DetectionPatterns.getManufacturerFromOui(oui)
+                    DetectionPatterns.getManufacturerFromOui(macAddress.take(8).uppercase())
                 } catch (e: Exception) { null }
 
-                currentList.add(0, SeenDevice(
+                SeenDevice(
                     id = macAddress,
                     name = deviceName,
                     type = "BLE",
@@ -1281,56 +1315,65 @@ class ScanningService : Service() {
                     serviceUuids = serviceUuids.map { it.toString() },
                     manufacturerData = manufacturerData,
                     advertisingRate = advertisingRate
-                ))
-
-                // Limit list size
-                if (currentList.size > 100) {
-                    currentList.removeAt(currentList.lastIndex)
-                }
+                )
             }
 
-            seenBleDevices.value = currentList
-            val now = System.currentTimeMillis()
+            seenBleRegistry[macAddress] = updated
+            trimSeenRegistry(seenBleRegistry)
+
             if (now - lastSeenBleBroadcastTime >= SEEN_DEVICE_BROADCAST_THROTTLE_MS) {
                 lastSeenBleBroadcastTime = now
-                broadcastSeenBleDevices()
+                seenBleDevices.value = seenBleRegistry.values.toList().asReversed()
+                publishSnapshot = true
+            }
+        }
+
+        if (publishSnapshot) broadcastSeenBleDevices()
+    }
+
+    private fun scheduleSeenWifiSnapshot() {
+        synchronized(ScanningServiceState) {
+            if (seenWifiPublishJob?.isActive == true) return
+            seenWifiPublishJob = serviceScope.launch {
+                delay(SEEN_WIFI_PUBLISH_DELAY_MS)
+                synchronized(ScanningServiceState) {
+                    seenWifiNetworks.value = seenWifiRegistry.values.toList().asReversed()
+                    seenWifiPublishJob = null
+                }
+                broadcastSeenWifiNetworks()
             }
         }
     }
 
     private fun trackSeenWifiNetwork(bssid: String, ssid: String, rssi: Int) {
-        val currentList = seenWifiNetworks.value.toMutableList()
-        val existingIndex = currentList.indexOfFirst { it.id == bssid }
+        val now = System.currentTimeMillis()
+        synchronized(ScanningServiceState) {
+            val existing = seenWifiRegistry[bssid]
+            val updated = if (existing != null) {
+                existing.copy(
+                    name = ssid,
+                    rssi = rssi,
+                    lastSeen = now,
+                    seenCount = existing.seenCount + 1
+                )
+            } else {
+                val manufacturer = try {
+                    DetectionPatterns.getManufacturerFromOui(bssid.take(8).uppercase())
+                } catch (e: Exception) { null }
 
-        if (existingIndex >= 0) {
-            val existing = currentList[existingIndex]
-            currentList[existingIndex] = existing.copy(
-                name = ssid,
-                rssi = rssi,
-                lastSeen = System.currentTimeMillis(),
-                seenCount = existing.seenCount + 1
-            )
-        } else {
-            val manufacturer = try {
-                val oui = bssid.take(8).uppercase()
-                DetectionPatterns.getManufacturerFromOui(oui)
-            } catch (e: Exception) { null }
-
-            currentList.add(0, SeenDevice(
-                id = bssid,
-                name = ssid,
-                type = "WiFi",
-                rssi = rssi,
-                manufacturer = manufacturer
-            ))
-
-            if (currentList.size > 100) {
-                currentList.removeAt(currentList.lastIndex)
+                SeenDevice(
+                    id = bssid,
+                    name = ssid,
+                    type = "WiFi",
+                    rssi = rssi,
+                    manufacturer = manufacturer
+                )
             }
-        }
 
-        seenWifiNetworks.value = currentList
-        broadcastSeenWifiNetworks()
+            seenWifiRegistry[bssid] = updated
+            trimSeenRegistry(seenWifiRegistry)
+        }
+        scheduleSeenWifiSnapshot()
     }
 
     // ==================== Status ====================
@@ -1588,6 +1631,14 @@ class ScanningService : Service() {
     private val MIN_WIFI_SCAN_INTERVAL_MS = 20_000L
     private val MAX_WIFI_SCAN_INTERVAL_MS = 120_000L
 
+    private fun getEffectiveWifiBaseIntervalMs(): Long {
+        val configuredMs = currentScanSettings
+            .getEffectiveWifiInterval(currentBatteryPercent)
+            .toLong() * 1000L
+        val boostedMs = if (isBoostModeActive) (configuredMs * 0.6f).toLong() else configuredMs
+        return boostedMs.coerceIn(MIN_WIFI_SCAN_INTERVAL_MS, MAX_WIFI_SCAN_INTERVAL_MS)
+    }
+
     @SuppressLint("MissingPermission")
     private fun startWifiScan() {
         if (!hasLocationPermissions()) {
@@ -1606,11 +1657,12 @@ class ScanningService : Service() {
         val now = System.currentTimeMillis()
         val timeSinceLastScan = now - lastSuccessfulWifiScanTime
 
+        val baseInterval = getEffectiveWifiBaseIntervalMs()
         val adaptiveInterval = if (wifiScanAttemptsSinceSuccess > 0) {
-            (MIN_WIFI_SCAN_INTERVAL_MS * (1 shl wifiScanAttemptsSinceSuccess.coerceAtMost(3)))
+            (baseInterval * (1L shl wifiScanAttemptsSinceSuccess.coerceAtMost(3)))
                 .coerceAtMost(MAX_WIFI_SCAN_INTERVAL_MS)
         } else {
-            MIN_WIFI_SCAN_INTERVAL_MS
+            baseInterval
         }
 
         if (timeSinceLastScan < adaptiveInterval) {
@@ -1681,7 +1733,9 @@ class ScanningService : Service() {
                         val now = System.currentTimeMillis()
                         if (lastThrottle == null || now - lastThrottle > 60000) {
                             lastWifiThrottleLogTime = now
-                            val nextAllowedIn = MIN_WIFI_SCAN_INTERVAL_MS * (1 shl wifiScanAttemptsSinceSuccess.coerceAtMost(3))
+                            val nextAllowedIn = (getEffectiveWifiBaseIntervalMs() *
+                                (1L shl wifiScanAttemptsSinceSuccess.coerceAtMost(3)))
+                                .coerceAtMost(MAX_WIFI_SCAN_INTERVAL_MS)
                             wifiStatus.value = SubsystemStatus.Error(-2, "Throttled (backoff: ${nextAllowedIn/1000}s)")
                             logError("WiFi", -2, "WiFi scan throttled by system (next attempt in ${nextAllowedIn/1000}s)", recoverable = true)
                         }
@@ -1719,7 +1773,6 @@ class ScanningService : Service() {
         // Update scan stats
         scanStats.value = scanStats.value.copy(
             wifiNetworksSeen = scanStats.value.wifiNetworksSeen + results.size,
-            successfulWifiScans = scanStats.value.successfulWifiScans + 1,
             lastWifiSuccessTime = System.currentTimeMillis()
         )
         broadcastScanStats()
@@ -2008,6 +2061,12 @@ class ScanningService : Service() {
 
             while (isActive && isScanning.value) {
                 try {
+                    val currentCount = detectionCount.value
+                    if (currentCount == lastCorrelationDetectionCount) {
+                        delay(CORRELATION_ANALYSIS_INTERVAL_MS)
+                        continue
+                    }
+
                     val sinceTimestamp = System.currentTimeMillis() - 10 * 60 * 1000L
                     val recentDetections = if (currentPrivacySettings.ephemeralModeEnabled) {
                         ephemeralRepository.getRecentDetections(sinceTimestamp).first()
@@ -2039,6 +2098,7 @@ class ScanningService : Service() {
                     }
 
                     crossDomainAnalyzer.cleanup()
+                    lastCorrelationDetectionCount = currentCount
 
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in correlation analysis: ${e.message}", e)

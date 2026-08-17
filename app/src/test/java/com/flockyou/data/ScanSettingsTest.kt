@@ -21,4 +21,20 @@ class ScanSettingsTest {
         val settings = ScanSettings(batteryAdaptiveMode = "performance", autoBatteryAdaptive = false)
         assertEquals(BatteryAdaptiveMode.PERFORMANCE, settings.getEffectiveMode(100))
     }
+
+    @Test
+    fun effectiveWifiInterval_respectsConfiguredBaseAndBatteryMode() {
+        val balanced = ScanSettings(
+            wifiScanIntervalSeconds = 45,
+            batteryAdaptiveMode = "balanced",
+            autoBatteryAdaptive = false
+        )
+        assertEquals(45, balanced.getEffectiveWifiInterval(100))
+
+        val saver = balanced.copy(batteryAdaptiveMode = "battery_saver")
+        assertEquals(67, saver.getEffectiveWifiInterval(100))
+
+        val performance = balanced.copy(batteryAdaptiveMode = "performance")
+        assertEquals(22, performance.getEffectiveWifiInterval(100))
+    }
 }
