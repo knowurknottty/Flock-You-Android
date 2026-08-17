@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/perf-moto-low-ram-r1.yml
       - tools/perf_moto_patch_v2.py
+      - tools/perf_moto_patch_p1.py
   workflow_dispatch: {}
 
 permissions:
@@ -31,8 +32,10 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Apply constrained-device patch
-        run: python3 tools/perf_moto_patch_v2.py
+      - name: Apply constrained-device patches
+        run: |
+          python3 tools/perf_moto_patch_v2.py
+          python3 tools/perf_moto_patch_p1.py
 
       - name: Grant Gradle execute permission
         run: chmod +x gradlew
@@ -50,4 +53,5 @@ jobs:
           git add app/src/main/java app/src/test/java
           git diff --cached --check
           git commit -m "perf: optimize scanner for constrained Android devices"
+          git pull --rebase origin perf/moto-low-ram-r1
           git push origin HEAD:perf/moto-low-ram-r1
