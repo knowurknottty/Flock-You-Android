@@ -1,0 +1,56 @@
+name: Adaptive UI R1 bootstrap
+
+on:
+  push:
+    branches:
+      - ui/adaptive-low-end-r1
+    paths:
+      - .github/workflows/ui-adaptive-r1-bootstrap.yml
+      - tools/ui_adaptive_r1_patch.py
+      - app/src/main/java/com/flockyou/ui/components/CapabilitySummaryCard.kt
+      - app/src/test/java/com/flockyou/ui/components/CapabilitySummaryCardTest.kt
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout adaptive UI branch
+        uses: actions/checkout@v4
+        with:
+          ref: ui/adaptive-low-end-r1
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Apply adaptive MainScreen patch
+        run: python3 tools/ui_adaptive_r1_patch.py
+
+      - name: Grant Gradle execute permission
+        run: chmod +x gradlew
+
+      - name: Unit tests - sideload
+        run: ./gradlew testsideloadDebugUnitTest --stacktrace --no-daemon
+
+      - name: Build - sideload debug
+        run: ./gradlew assemblesideloadDebug --stacktrace --no-daemon
+
+      - name: Commit verified UI source changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/flockyou/ui/screens/MainScreen.kt
+          git diff --cached --check
+          git commit -m "ui: make home capability-aware and calmer"
+          git pull --rebase origin ui/adaptive-low-end-r1
+          git push origin HEAD:ui/adaptive-low-end-r1
