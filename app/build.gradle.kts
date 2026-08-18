@@ -220,6 +220,13 @@ android {
         }
     }
 
+    // Unit test configuration: allow android.* stubs (e.g. android.util.Log) to return
+    // default values in local JVM tests so data-domain repositories can be tested without
+    // Robolectric. This does not affect production code or instrumented tests.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     // Ensure all build variants are visible in Android Studio
     // This creates: sideloadDebug, sideloadRelease, systemDebug, systemRelease, oemDebug, oemRelease
     androidComponents {
@@ -229,6 +236,12 @@ android {
             // Release variants: oemRelease, sideloadRelease, systemRelease
         }
     }
+}
+
+// Export Room schemas to app/schemas so migrations can be validated and tested
+// (exportSchema = true on the @Database annotation).
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {

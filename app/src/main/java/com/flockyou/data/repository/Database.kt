@@ -146,6 +146,9 @@ interface DetectionDao {
     @Query("SELECT * FROM detections ORDER BY lastSeenTimestamp DESC")
     suspend fun getAllDetectionsSnapshot(): List<Detection>
 
+    @Query("SELECT * FROM detections WHERE timestamp BETWEEN :start AND :end ORDER BY lastSeenTimestamp DESC")
+    suspend fun getDetectionsBetween(start: Long, end: Long): List<Detection>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDetection(detection: Detection)
     
@@ -536,6 +539,48 @@ object DatabaseKeyManager {
     }
 
     /**
+     * Destroy the database encryption key material (crypto-erasure).
+     *
+     * This is the primary defensible secure-erasure primitive on flash/UFS storage: after this
+     * returns, the SQLCipher database file is permanently undecryptable even if its bytes are
+     * recovered by a forensic tool, because the 256-bit passphrase that encrypts the pages is
+     * itself wrapped by a Keystore key that no longer exists, and the wrapped passphrase has been
+     * removed from preferences.
+     *
+     * Multi-pass overwrite cannot guarantee physical block erasure on flash/UFS (wear leveling and
+     * the flash translation layer remap logical writes to different physical cells), so key
+     * destruction is the guarantee we rely on; file overwrite/delete is only a best-effort
+     * complement, never the primary mechanism.
+     *
+     * @return true if any key entry was destroyed, false if none was present.
+     */
+    fun destroyKeyMaterial(context: Context): Boolean {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+
+        var destroyed = false
+        for (alias in listOf(KEYSTORE_ALIAS, LEGACY_KEYSTORE_ALIAS)) {
+            if (keyStore.containsAlias(alias)) {
+                keyStore.deleteEntry(alias)
+                destroyed = true
+            }
+        }
+
+        // Remove the wrapped passphrase, IV, and recorded security level from preferences.
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(PREFS_KEY_PASSPHRASE)
+            .remove(PREFS_KEY_IV)
+            .remove(PREFS_KEY_SECURITY_LEVEL)
+            .remove(LEGACY_PREFS_KEY_PASSPHRASE)
+            .remove(LEGACY_PREFS_KEY_IV)
+            .apply()
+
+        cachedSecurityLevel = null
+        Log.i(TAG, "Database key material destroyed (crypto-erasure), anyKeyDestroyed=$destroyed")
+        return destroyed
+    }
+
+    /**
      * Try to migrate from legacy passphrase (non-hardware-backed) to new hardware-backed key.
      * Returns true if migration was successful or not needed.
      */
@@ -603,7 +648,12 @@ object DatabaseKeyManager {
 
 /**
  * Room database for storing detections.
- * Uses SQLCipher for encryption to protect sensitive detection data.
+ *
+ * Encryption truthfulness: pages are encrypted at rest by SQLCipher (net.zetetic 4.x). SQLCipher's
+ * page encryption is AES-256-CBC with an HMAC integrity check per page — it is NOT GCM. The only
+ * use of AES/GCM in this file is the wrapping of the database passphrase by [DatabaseKeyManager]
+ * (the 256-bit passphrase is itself encrypted with an AES/GCM Keystore key). Do not conflate the
+ * two: the passphrase wrapper is GCM; the database page encryption is SQLCipher's CBC+HMAC.
  */
 @Database(
     entities = [
@@ -614,7 +664,7 @@ object DatabaseKeyManager {
         CellularEventEntity::class
     ],
     version = 10,
-    exportSchema = false
+    exportSchema = true
 )
 @TypeConverters(Converters::class)
 abstract class FlockYouDatabase : RoomDatabase() {
@@ -776,7 +826,10 @@ abstract class FlockYouDatabase : RoomDatabase() {
                 )
                     .openHelperFactory(factory)
                     .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
-                    .fallbackToDestructiveMigration() // Only as last resort
+                    // Fail loudly on an unhandled UPGRADE (so we never silently destroy a user's
+                    // encrypted history because a future migration was forgotten). Only a genuine
+                    // DOWNGRADE (installing an older APK) falls back to destructive recreation.
+                    .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
                 INSTANCE = instance
                 instance
