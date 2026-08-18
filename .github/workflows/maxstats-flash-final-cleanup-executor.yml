@@ -1,0 +1,58 @@
+name: MAXSTATS Flash final UI cleanup executor
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    if: >-
+      github.event.pull_request.number == 11 &&
+      github.event.pull_request.head.ref == 'maxstats/flash-ui-r4' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout audited Flash head
+        uses: actions/checkout@v4
+        with:
+          ref: maxstats/flash-ui-r4
+          fetch-depth: 0
+
+      - name: Verify audited input blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object .github/scripts/apply_flash_final_ui_cleanup.py)" = "2aed936e5d0ee2a7456e5c3c14d79220fe8bebb9"
+          test "$(git hash-object app/src/main/java/com/flockyou/ui/screens/MapScreen.kt)" = "ad1f07f28d632ae50f3ef268ad3cb2d1cfaf0bed"
+          test "$(git hash-object app/src/main/java/com/flockyou/ui/screens/MapViewModel.kt)" = "7f74967fb39dd3267cedfd1ad0a044a8a4a791b6"
+          test "$(git hash-object app/src/main/java/com/flockyou/ui/screens/AllDetectionsScreen.kt)" = "c3fdbc96a17248f66924d4281a494138ea3be900"
+          test "$(git hash-object app/src/main/java/com/flockyou/ui/screens/SettingsScreen.kt)" = "faf83ecc880e09723b8472b72d253be9c8ca109b"
+
+      - name: Apply assertion-guarded source transform
+        run: python3 .github/scripts/apply_flash_final_ui_cleanup.py
+
+      - name: Verify UI-only diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test "$(git diff --name-only | wc -l | tr -d ' ')" = "4"
+          git diff --name-only | grep -Fx 'app/src/main/java/com/flockyou/ui/screens/MapScreen.kt'
+          git diff --name-only | grep -Fx 'app/src/main/java/com/flockyou/ui/screens/MapViewModel.kt'
+          git diff --name-only | grep -Fx 'app/src/main/java/com/flockyou/ui/screens/AllDetectionsScreen.kt'
+          git diff --name-only | grep -Fx 'app/src/main/java/com/flockyou/ui/screens/SettingsScreen.kt'
+
+      - name: Commit audited cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/flockyou/ui/screens/MapScreen.kt app/src/main/java/com/flockyou/ui/screens/MapViewModel.kt app/src/main/java/com/flockyou/ui/screens/AllDetectionsScreen.kt app/src/main/java/com/flockyou/ui/screens/SettingsScreen.kt
+          git commit -m 'fix(ui): remove fake GPS precision and lifecycle-gate settings'
+          git push origin HEAD:maxstats/flash-ui-r4
