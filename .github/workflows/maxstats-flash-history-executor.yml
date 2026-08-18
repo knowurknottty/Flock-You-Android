@@ -1,0 +1,54 @@
+name: MAXSTATS Flash history executor
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    if: >-
+      github.event.pull_request.number == 11 &&
+      github.event.pull_request.head.ref == 'maxstats/flash-ui-r4' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout audited Flash head
+        uses: actions/checkout@v4
+        with:
+          ref: maxstats/flash-ui-r4
+          fetch-depth: 0
+
+      - name: Verify audited input blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object .github/scripts/apply_flash_history_projection.py)" = "ca60bde88dc6874626239d2f91e6586e9d948681"
+          test "$(git hash-object app/src/main/java/com/flockyou/ui/screens/MainViewModel.kt)" = "949c22f8c3e1d69ddb7da90c9e07f7a31814d75f"
+          test "$(git hash-object app/src/main/java/com/flockyou/ui/screens/MainScreen.kt)" = "9919c294f50436c64e09e8e79aa179affd3f6a46"
+
+      - name: Apply assertion-guarded source transform
+        run: python3 .github/scripts/apply_flash_history_projection.py
+
+      - name: Verify production-only diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test "$(git diff --name-only | wc -l | tr -d ' ')" = "2"
+          git diff --name-only | grep -Fx 'app/src/main/java/com/flockyou/ui/screens/MainViewModel.kt'
+          git diff --name-only | grep -Fx 'app/src/main/java/com/flockyou/ui/screens/MainScreen.kt'
+
+      - name: Commit audited history projection
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/flockyou/ui/screens/MainViewModel.kt app/src/main/java/com/flockyou/ui/screens/MainScreen.kt
+          git commit -m 'perf(ui): precompute detection history projection'
+          git push origin HEAD:maxstats/flash-ui-r4
