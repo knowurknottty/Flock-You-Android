@@ -10,7 +10,6 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
@@ -509,7 +508,7 @@ class AiSettingsRepository @Inject constructor(
      * of truth: hydrated lazily on first [settingsSnapshot] call and invalidated on every
      * settings write (see [edit]), so it never becomes an independently stale duplicate.
      */
-    private val _settingsSnapshot = MutableStateFlow<AiSettings?>(null)
+    private val settingsSnapshotCache = AiSettingsSnapshotCache<AiSettings>()
 
     /**
      * Return the current [AiSettings] snapshot with O(1) in-memory cost after first hydration.
@@ -524,20 +523,16 @@ class AiSettingsRepository @Inject constructor(
      * - Concurrent first-time callers may each perform one redundant read; this is benign and
      *   cannot produce a stale value because invalidation happens on the write path.
      */
-    suspend fun settingsSnapshot(): AiSettings {
-        _settingsSnapshot.value?.let { return it }
-        val loaded = settings.first()
-        _settingsSnapshot.value = loaded
-        return loaded
-    }
+    suspend fun settingsSnapshot(): AiSettings =
+        settingsSnapshotCache.get { settings.first() }
 
     /**
      * Invalidate the cached snapshot so the next [settingsSnapshot] re-hydrates from DataStore.
      * Called automatically after every settings write; exposed for tests and external callers
      * that need to force a refresh.
      */
-    fun invalidateSnapshot() {
-        _settingsSnapshot.value = null
+    suspend fun invalidateSnapshot() {
+        settingsSnapshotCache.invalidate()
     }
 
     /**
@@ -545,8 +540,9 @@ class AiSettingsRepository @Inject constructor(
      * invalidates the cached snapshot so hot-path readers never observe a stale value.
      */
     private suspend fun edit(transform: (MutablePreferences) -> Unit) {
-        context.aiSettingsDataStore.edit(transform)
-        _settingsSnapshot.value = null
+        settingsSnapshotCache.mutate {
+            context.aiSettingsDataStore.edit(transform)
+        }
     }
 
     /**
