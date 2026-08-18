@@ -215,7 +215,8 @@
         <receiver
             android:name=".service.ServiceRestartReceiver"
             android:enabled="true"
-            android:exported="false">
+            android:exported="false"
+            android:process=":scanning">
             <intent-filter>
                 <action android:name="com.flockyou.RESTART_SERVICE" />
                 <action android:name="com.flockyou.SERVICE_HEARTBEAT" />
@@ -227,6 +228,7 @@
             android:name=".service.ServiceRestartJobService"
             android:enabled="true"
             android:exported="false"
+            android:process=":scanning"
             android:permission="android.permission.BIND_JOB_SERVICE" />
         
         <!-- File Provider for sharing exported files -->

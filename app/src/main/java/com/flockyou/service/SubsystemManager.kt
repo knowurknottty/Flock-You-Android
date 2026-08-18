@@ -409,7 +409,9 @@ internal fun ScanningService.startRfSignalAnalysis() {
         return
     }
     if (rfSignalAnalyzer == null) {
-        rfSignalAnalyzer = RfSignalAnalyzer(applicationContext, detectorCallbackImpl)
+        rfSignalAnalyzer = RfSignalAnalyzer(applicationContext, detectorCallbackImpl).also {
+            it.enableHiddenNetworkRfAnomaly = currentDetectionSettings.enableHiddenNetworkRfAnomaly
+        }
     }
     Log.d(TAG, "Starting RF signal analysis")
 
@@ -536,6 +538,10 @@ internal fun ScanningService.startUltrasonicDetection() {
     if (ultrasonicDetector == null) {
         ultrasonicDetector = UltrasonicDetector(applicationContext, detectorCallbackImpl)
     }
+    ultrasonicDetector?.updateScanTiming(
+        intervalSeconds = currentScanSettings.ultrasonicScanIntervalSeconds,
+        durationSeconds = currentScanSettings.ultrasonicScanDurationSeconds
+    )
 
     Log.d(TAG, "Starting ultrasonic beacon detection (user consented, audio encrypted in memory)")
 
@@ -647,6 +653,7 @@ internal fun ScanningService.startGnssMonitoring() {
     if (gnssSatelliteMonitor == null) {
         gnssSatelliteMonitor = com.flockyou.monitoring.GnssSatelliteMonitor(applicationContext, detectorCallbackImpl)
     }
+    gnssSatelliteMonitor?.updateScanTiming(currentScanSettings.gnssScanIntervalSeconds)
 
     Log.d(TAG, "Starting GNSS satellite monitoring for spoofing/jamming detection")
     ScanningServiceState.gnssMonitorStatus.value = SubsystemStatus.Active
