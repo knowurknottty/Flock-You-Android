@@ -34,6 +34,15 @@ class MapViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(MapUiState())
     val uiState: StateFlow<MapUiState> = _uiState.asStateFlow()
 
+    val hasAnyDetections: StateFlow<Boolean> = repository.totalDetectionCount
+        .map { it > 0 }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = false
+        )
+
     /**
      * Filtered geolocated detections for the map.
      *

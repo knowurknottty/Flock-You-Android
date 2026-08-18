@@ -46,22 +46,8 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.util.MapTileIndex
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.Polygon
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.math.cos
-
-// Cluster radius in degrees (approximately 100m at equator)
-private const val CLUSTER_RADIUS_DEGREES = 0.001
-
-/**
- * Represents a cluster of detections on the map
- */
-private data class DetectionCluster(
-    val center: GeoPoint,
-    val detections: List<Detection>,
-    val highestThreatLevel: ThreatLevel
-)
 
 /**
  * GPS status for the indicator
@@ -80,6 +66,7 @@ fun MapScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val filteredDetections by viewModel.detectionsWithLocation.collectAsStateWithLifecycle()
+    val hasAnyDetections by viewModel.hasAnyDetections.collectAsStateWithLifecycle()
     var selectedDetection by remember { mutableStateOf<Detection?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var zoomBucket by remember { mutableStateOf(MapZoomBucket.WORLD) }
@@ -88,7 +75,6 @@ fun MapScreen(
 
     // GPS status state
     var gpsStatus by remember { mutableStateOf(GpsStatus.SEARCHING) }
-    var gpsAccuracyMeters by remember { mutableStateOf<Float?>(null) }
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
 
     // Location permission launcher for requesting location permissions
@@ -121,31 +107,17 @@ fun MapScreen(
         }
     }
 
-    // Update GPS status based on detections with location
-    LaunchedEffect(filteredDetections) {
-        val hasLocationData = filteredDetections.any {
-            it.latitude != null && it.longitude != null
-        }
+    // This map has stored detection coordinates, not an Android Location accuracy fix.
+    // Never infer GPS +/- meters from the surveillance device RSSI/signal-strength field.
+    LaunchedEffect(filteredDetections, hasAnyDetections) {
         gpsStatus = when {
-            hasLocationData -> GpsStatus.ACTIVE
-            filteredDetections.isEmpty() -> GpsStatus.SEARCHING
-            else -> GpsStatus.DISABLED
+            filteredDetections.isNotEmpty() -> GpsStatus.ACTIVE
+            hasAnyDetections -> GpsStatus.DISABLED
+            else -> GpsStatus.SEARCHING
         }
-
-        // Get user location from most recent detection
-        filteredDetections
+        userLocation = filteredDetections
             .maxByOrNull { it.timestamp }
-            ?.let { latest ->
-                userLocation = GeoPoint(latest.latitude!!, latest.longitude!!)
-                // Estimate accuracy based on signal strength (rough approximation)
-                gpsAccuracyMeters = when (latest.signalStrength) {
-                    SignalStrength.EXCELLENT -> 10f
-                    SignalStrength.GOOD -> 25f
-                    SignalStrength.MEDIUM -> 50f
-                    SignalStrength.WEAK -> 100f
-                    else -> 150f
-                }
-            }
+            ?.let { latest -> GeoPoint(latest.latitude!!, latest.longitude!!) }
     }
     
     // Initialize osmdroid configuration
@@ -158,10 +130,10 @@ fun MapScreen(
     }
     
     // Update markers when detections change - with clustering support
-    LaunchedEffect(filteredDetections, mapView, zoomBucket, userLocation, gpsAccuracyMeters) {
+    LaunchedEffect(filteredDetections, mapView, zoomBucket) {
         mapView?.let { map ->
             // Clear existing markers and overlays
-            map.overlays.removeAll { it is Marker || it is Polygon }
+            map.overlays.removeAll { it is Marker }
 
             // DetectionRepository.detectionsWithLocation already guarantees coordinates.
             val detectionsWithCoords = filteredDetections
@@ -241,14 +213,6 @@ fun MapScreen(
                         }
                     }
                     map.overlays.add(marker)
-                }
-            }
-
-            // Add GPS accuracy circle if user location is available
-            userLocation?.let { location ->
-                gpsAccuracyMeters?.let { accuracy ->
-                    val accuracyCircle = createAccuracyCircle(location, accuracy.toDouble())
-                    map.overlays.add(0, accuracyCircle) // Add at bottom so markers are on top
                 }
             }
 
@@ -346,20 +310,12 @@ fun MapScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Check if we have location data
             val hasLocationData = filteredDetections.isNotEmpty()
 
-            if (!hasLocationData && filteredDetections.isNotEmpty()) {
-                // Empty state - detections exist but no location data
+            if (!hasLocationData) {
                 MapEmptyState(
-                    hasDetections = true,
-                    onRequestPermissions = requestLocationPermissions
-                )
-            } else if (filteredDetections.isEmpty()) {
-                // Empty state - no detections at all
-                MapEmptyState(
-                    hasDetections = false,
-                    onRequestPermissions = startScanning
+                    hasDetections = hasAnyDetections,
+                    onRequestPermissions = if (hasAnyDetections) requestLocationPermissions else startScanning
                 )
             } else {
                 // OpenStreetMap View with HTTPS tile source
@@ -387,7 +343,7 @@ fun MapScreen(
             // GPS Status Indicator (top-start corner)
             GpsStatusIndicator(
                 status = gpsStatus,
-                accuracyMeters = gpsAccuracyMeters,
+                accuracyMeters = null,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(16.dp)
@@ -532,35 +488,6 @@ private fun zoomToFitPoints(map: MapView, points: List<GeoPoint>, minZoom: Doubl
             }
         }
     }
-}
-
-/**
- * Create GPS accuracy circle overlay
- */
-private fun createAccuracyCircle(center: GeoPoint, radiusMeters: Double): Polygon {
-    val circle = Polygon()
-    val points = mutableListOf<GeoPoint>()
-
-    // Convert meters to degrees (rough approximation)
-    // 1 degree latitude ~ 111km
-    // 1 degree longitude ~ 111km * cos(latitude)
-    val radiusLatDegrees = radiusMeters / 111000.0
-    val radiusLonDegrees = radiusMeters / (111000.0 * cos(Math.toRadians(center.latitude)))
-
-    // Create circle points
-    for (i in 0..36) {
-        val angle = Math.toRadians(i * 10.0)
-        val lat = center.latitude + radiusLatDegrees * kotlin.math.sin(angle)
-        val lon = center.longitude + radiusLonDegrees * kotlin.math.cos(angle)
-        points.add(GeoPoint(lat, lon))
-    }
-
-    circle.points = points
-    circle.fillPaint.color = Color.argb(50, 33, 150, 243) // Semi-transparent blue
-    circle.outlinePaint.color = Color.argb(150, 33, 150, 243) // Blue outline
-    circle.outlinePaint.strokeWidth = 3f
-
-    return circle
 }
 
 private fun createMarkerDrawable(threatLevel: ThreatLevel): android.graphics.drawable.Drawable {
