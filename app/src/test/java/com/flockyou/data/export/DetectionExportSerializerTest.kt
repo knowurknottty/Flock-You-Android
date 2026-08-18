@@ -16,6 +16,15 @@ import javax.xml.parsers.DocumentBuilderFactory
 
 class DetectionExportSerializerTest {
 
+    @Test
+    fun `request defaults protect identifiers and location precision`() {
+        val request = ExportRequest(format = ExportFormat.CSV)
+
+        assertTrue("identifiers should be redacted unless explicitly requested", request.redactIdentifiers)
+        assertEquals("default location export should be deliberately coarse", 3, request.locationPrecisionDecimals)
+        assertTrue(request.includeLocation)
+    }
+
     // =====================================================================================
     // Filtering
     // =====================================================================================
