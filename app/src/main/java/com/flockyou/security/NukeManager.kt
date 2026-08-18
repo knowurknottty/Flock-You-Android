@@ -7,6 +7,7 @@ import androidx.work.WorkManager
 import com.flockyou.data.NukeSettings
 import com.flockyou.data.NukeSettingsRepository
 import com.flockyou.data.repository.FlockYouDatabase
+import com.flockyou.data.repository.DatabaseKeyManager
 import com.flockyou.service.ScanningService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -55,7 +56,10 @@ data class NukeResult(
  * - App settings/preferences (DataStore)
  * - Cached files
  *
- * When secure wipe is enabled, data is overwritten multiple times before deletion.
+ * Erasure semantics: the primary defensible guarantee is crypto-erasure — destroying the SQLCipher
+ * key material so the database is permanently undecryptable. The optional multi-pass overwrite is
+ * a best-effort complement (see [secureDeleteFile]) and is not a physical-erasure guarantee on
+ * flash/UFS.
  */
 @Singleton
 class NukeManager @Inject constructor(
@@ -209,6 +213,12 @@ class NukeManager @Inject constructor(
             // Clear the singleton instance so it can be recreated if app continues running
             FlockYouDatabase.clearInstance()
 
+            // Crypto-erasure: destroy the SQLCipher key material (Keystore key + wrapped
+            // passphrase) so the database is permanently undecryptable even if its bytes are
+            // recovered from flash. This is the primary defensible secure-erasure primitive on
+            // UFS/flash; the file overwrite/delete below is a best-effort complement.
+            DatabaseKeyManager.destroyKeyMaterial(context)
+
             // Give the system time to release file handles
             kotlinx.coroutines.delay(FILE_HANDLE_RELEASE_DELAY_MS)
 
@@ -346,10 +356,14 @@ class NukeManager @Inject constructor(
     }
 
     /**
-     * Securely delete a file by overwriting with random data multiple times.
+     * Best-effort overwrite of a file before deletion.
      *
-     * This provides defense against data recovery from storage media.
-     * Uses multiple passes with random data and zeros.
+     * IMPORTANT (truthfulness): on flash/UFS storage this does NOT guarantee physical erasure.
+     * The flash translation layer and wear leveling remap logical writes to different physical
+     * cells, so overwritten blocks can leave recoverable remnants. For the database the primary
+     * defensible guarantee is crypto-erasure (destroying the SQLCipher key material), which makes
+     * the database undecryptable regardless of whether its bytes are recovered. This overwrite is
+     * a best-effort complement only and must not be presented as a guarantee.
      */
     private fun secureDeleteFile(file: File, passes: Int): Boolean {
         if (!file.exists()) return true

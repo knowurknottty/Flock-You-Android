@@ -138,7 +138,7 @@ class SurveillanceSummarizer @Inject constructor(
             } else null
 
             // Use PromptSelector to choose between verbose and compact prompts
-            val settings = aiSettingsRepository.settings.first()
+            val settings = aiSettingsRepository.settingsSnapshot()
             val model = AiModel.fromId(settings.selectedModel)
             val prompt = PromptSelector.getSummaryPrompt(detections, periodDescription, comparisonNote, settings, model)
             val response = mediaPipeLlmClient.generateResponse(prompt)
