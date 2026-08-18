@@ -9,12 +9,21 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: stage Syn runtime patch runner'
+    if: github.event.head_commit.message == 'chore: instrument Syn runtime patch runner'
     runs-on: ubuntu-latest
     steps:
+      - name: Announce runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/6/comments" \
+            -f body="Syn one-shot patch runner started: run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}."
+
       - name: Checkout exact Syn branch
         uses: actions/checkout@v4
         with:
@@ -36,7 +45,22 @@ jobs:
           git status --short
           test -n "$(git status --short app/src/main app/src/test || true)"
 
+      - name: Archive patched source
+        uses: actions/upload-artifact@v4
+        with:
+          name: syn-runtime-patched-source
+          path: |
+            app/src/main/AndroidManifest.xml
+            app/src/main/java/com/flockyou/service/ScanningService.kt
+            app/src/main/java/com/flockyou/service/ScanningServiceModels.kt
+            app/src/main/java/com/flockyou/service/ScanningServiceState.kt
+            app/src/main/java/com/flockyou/service/ScanningRuntimePolicy.kt
+            app/src/main/java/com/flockyou/service/ServiceRestartReceiver.kt
+            app/src/main/java/com/flockyou/service/SubsystemManager.kt
+
       - name: Commit production changes
+        id: push
+        continue-on-error: true
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -46,3 +70,13 @@ jobs:
           git diff --cached --stat
           git commit -m "perf: harden scanner runtime lifecycle"
           git push origin HEAD:maxstats/syn-runtime-r4
+
+      - name: Report runner result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+        shell: bash
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/6/comments" \
+            -f body="Syn one-shot patch runner finished: run ${GITHUB_RUN_ID}; job=${{ job.status }}; push=${PUSH_OUTCOME:-not-run}."
