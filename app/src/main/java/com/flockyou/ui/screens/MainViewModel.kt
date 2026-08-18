@@ -571,10 +571,12 @@ class MainViewModel @Inject constructor(
             }
         }
 
-        // Compute related detection counts when detections change
+        // Compute related detection counts when detections change using the presentation-layer
+        // indexed counter. This preserves the previous semantics without an O(n^2) nested scan
+        // on every Room emission.
         viewModelScope.launch {
             repository.allDetections.collect { detections ->
-                val counts = computeRelatedCounts(detections)
+                val counts = RelatedDetectionCounter.compute(detections)
                 _uiState.update { it.copy(relatedDetectionCounts = counts) }
             }
         }
@@ -829,35 +831,6 @@ class MainViewModel @Inject constructor(
             }
             _uiState.update { it.copy(selectionMode = false, selectedDetectionIds = emptySet()) }
         }
-    }
-
-    // --- Related detection count computation ---
-
-    private fun computeRelatedCounts(detections: List<com.flockyou.data.model.Detection>): Map<String, Int> {
-        if (detections.size < 2) return emptyMap()
-        val counts = mutableMapOf<String, Int>()
-        for (detection in detections) {
-            var related = 0
-            for (other in detections) {
-                if (other.id == detection.id) continue
-                // MAC match
-                if (detection.macAddress != null && detection.macAddress == other.macAddress) {
-                    related++
-                    continue
-                }
-                // Same device type within proximity and 10 minutes
-                if (detection.deviceType == other.deviceType &&
-                    detection.protocol == other.protocol &&
-                    kotlin.math.abs(detection.timestamp - other.timestamp) < 600_000
-                ) {
-                    related++
-                }
-            }
-            if (related > 0) {
-                counts[detection.id] = related
-            }
-        }
-        return counts
     }
 
     // --- Enriched data access ---
