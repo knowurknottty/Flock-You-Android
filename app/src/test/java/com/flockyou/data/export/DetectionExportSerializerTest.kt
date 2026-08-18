@@ -25,6 +25,30 @@ class DetectionExportSerializerTest {
         assertTrue(request.includeLocation)
     }
 
+    @Test
+    fun `bare export request applies privacy defaults end to end`() {
+        val detection = detection(
+            id = "private-id",
+            mac = "AA:BB:CC:DD:EE:FF",
+            ssid = "PrivateNetwork",
+            lat = 47.60625,
+            lon = -122.33213,
+        )
+
+        val geojson = DetectionExportSerializer.serialize(
+            ExportRequest(format = ExportFormat.GEOJSON),
+            listOf(detection),
+        )
+
+        assertFalse(geojson.contains("private-id"))
+        assertFalse(geojson.contains("AA:BB:CC:DD:EE:FF"))
+        assertFalse(geojson.contains("PrivateNetwork"))
+        assertTrue(geojson.contains("-122.332"))
+        assertTrue(geojson.contains("47.606"))
+        assertFalse(geojson.contains("-122.33213"))
+        assertFalse(geojson.contains("47.60625"))
+    }
+
     // =====================================================================================
     // Filtering
     // =====================================================================================
@@ -175,7 +199,7 @@ class DetectionExportSerializerTest {
     fun `GeoJSON output is valid JSON with correct geometry`() {
         val d = detection(lat = 47.6062, lon = -122.3321)
         val json = DetectionExportSerializer.serialize(
-            ExportRequest(format = ExportFormat.GEOJSON),
+            ExportRequest(format = ExportFormat.GEOJSON, locationPrecisionDecimals = 6),
             listOf(d),
         )
         val parsed = parseGeoJson(json)
@@ -223,7 +247,10 @@ class DetectionExportSerializerTest {
             detection(id = "located", lat = 47.6, lon = -122.3),
             detection(id = "noloc", lat = null, lon = null),
         )
-        val csv = DetectionExportSerializer.serialize(ExportRequest(format = ExportFormat.CSV), detections)
+        val csv = DetectionExportSerializer.serialize(
+            ExportRequest(format = ExportFormat.CSV, redactIdentifiers = false),
+            detections,
+        )
         val lines = csv.trim().split('\n')
         assertEquals(3, lines.size) // header + 2 rows
         assertTrue(csv.contains("located"))
@@ -233,7 +260,10 @@ class DetectionExportSerializerTest {
     @Test
     fun `CSV escapes embedded commas and quotes`() {
         val d = detection(id = "d1", ssid = "Home, Sweet \"Home\"")
-        val csv = DetectionExportSerializer.serialize(ExportRequest(format = ExportFormat.CSV), listOf(d))
+        val csv = DetectionExportSerializer.serialize(
+            ExportRequest(format = ExportFormat.CSV, redactIdentifiers = false),
+            listOf(d),
+        )
         assertTrue(csv.contains("\"Home, Sweet \"\"Home\"\"\""))
     }
 

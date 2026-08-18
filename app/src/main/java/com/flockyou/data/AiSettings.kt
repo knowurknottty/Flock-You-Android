@@ -501,12 +501,10 @@ class AiSettingsRepository @Inject constructor(
     }
 
     /**
-     * In-memory snapshot of the most recently hydrated [AiSettings].
-     *
-     * This is the repository-owned hot cache used by per-detection analysis paths so that
-     * they do not perform a DataStore disk read for every detection. It is a single source
-     * of truth: hydrated lazily on first [settingsSnapshot] call and invalidated on every
-     * settings write (see [edit]), so it never becomes an independently stale duplicate.
+     * Repository-owned derivative cache used by per-detection analysis paths so they do not
+     * perform a DataStore read for every detection. Persisted DataStore/encrypted preferences
+     * remain the source of truth; [AiSettingsSnapshotCache] serializes hydration and writes so
+     * an older in-flight read cannot republish stale state after a completed mutation.
      */
     private val settingsSnapshotCache = AiSettingsSnapshotCache<AiSettings>()
 
@@ -518,26 +516,23 @@ class AiSettingsRepository @Inject constructor(
      *
      * Consistency semantics:
      * - The value is always a full [AiSettings] (never null to callers).
-     * - The value reflects the latest persisted write (the cache is invalidated synchronously
-     *   by [edit] after every mutation).
-     * - Concurrent first-time callers may each perform one redundant read; this is benign and
-     *   cannot produce a stale value because invalidation happens on the write path.
+     * - Hydration and repository writes share one coroutine mutex.
+     * - After a successful mutation returns, no older hydration can publish over that write.
+     * - Concurrent cold readers coalesce behind the same first hydration.
      */
     suspend fun settingsSnapshot(): AiSettings =
         settingsSnapshotCache.get { settings.first() }
 
     /**
-     * Invalidate the cached snapshot so the next [settingsSnapshot] re-hydrates from DataStore.
-     * Called automatically after every settings write; exposed for tests and external callers
-     * that need to force a refresh.
+     * Invalidate the cached snapshot under the same serialization boundary used by hydration.
      */
     suspend fun invalidateSnapshot() {
         settingsSnapshotCache.invalidate()
     }
 
     /**
-     * Single write chokepoint for DataStore mutations. Applies the transform and then
-     * invalidates the cached snapshot so hot-path readers never observe a stale value.
+     * Single write chokepoint for DataStore mutations. The persistent write and cache
+     * invalidation execute inside the same serialization boundary as snapshot hydration.
      */
     private suspend fun edit(transform: (MutablePreferences) -> Unit) {
         settingsSnapshotCache.mutate {
@@ -564,10 +559,10 @@ class AiSettingsRepository @Inject constructor(
      */
     suspend fun setHuggingFaceToken(token: String) {
         try {
-            encryptedPrefs.edit().putString(EncryptedKeys.HUGGINGFACE_TOKEN, token).apply()
-            // The token is folded into the AiSettings snapshot; invalidate so the next
-            // snapshot read re-hydrates and observes the new value.
-            invalidateSnapshot()
+            // Token state participates in the same cache linearization boundary as DataStore.
+            settingsSnapshotCache.mutate {
+                encryptedPrefs.edit().putString(EncryptedKeys.HUGGINGFACE_TOKEN, token).apply()
+            }
         } catch (e: Exception) {
             android.util.Log.e("AiSettingsRepository", "Failed to save encrypted token", e)
         }

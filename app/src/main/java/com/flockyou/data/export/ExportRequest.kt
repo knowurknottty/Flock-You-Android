@@ -21,9 +21,10 @@ import com.flockyou.data.model.ThreatLevel
  * @param protocols         protocol whitelist; empty set means "all protocols".
  * @param threatLevels      threat-level whitelist; empty set means "all threat levels".
  * @param locationPrecisionDecimals  number of decimal places to round lat/lon to before writing.
- *                          6 ≈ 0.11 m (effectively exact for GPS); lower values (e.g. 3 ≈ 110 m)
- *                          deliberately coarsen the exported location for privacy.
- * @param redactIdentifiers when true, strip per-device identifiers (MAC, SSID, device name,
+ *                          Defaults to 3 (roughly 110 m latitude resolution) so a bare request
+ *                          does not export effectively exact coordinates. Higher precision is an
+ *                          explicit caller choice.
+ * @param redactIdentifiers defaults true; strip per-device identifiers (MAC, SSID, device name,
  *                          service UUIDs, manufacturer, raw advertisement data, matched patterns,
  *                          and the internal detection id) so the export contains only categories,
  *                          scores, timestamps, and (optionally) coarsened coordinates.
@@ -36,8 +37,8 @@ data class ExportRequest(
     val endTime: Long? = null,
     val protocols: Set<DetectionProtocol> = emptySet(),
     val threatLevels: Set<ThreatLevel> = emptySet(),
-    val locationPrecisionDecimals: Int = 6,
-    val redactIdentifiers: Boolean = false,
+    val locationPrecisionDecimals: Int = 3,
+    val redactIdentifiers: Boolean = true,
     val includeLocation: Boolean = true,
 ) {
     init {

@@ -9,9 +9,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -34,8 +31,6 @@ class DetectionExportService @Inject constructor(
         private const val EXPORT_DIR_NAME = "exports"
         private const val EXPORT_RETENTION_MS = 24L * 60L * 60L * 1000L // 24h
     }
-
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
 
     /**
      * Generate a local export for [request] and return a shareable [Uri] to the written file.
@@ -70,22 +65,16 @@ class DetectionExportService @Inject constructor(
     /**
      * The suggested display filename for a pending export (deterministic, contains no identifiers).
      */
-    fun suggestedFilename(request: ExportRequest): String {
-        val timestamp = dateFormat.format(Date())
-        return "flockyou-detections_$timestamp.${request.format.fileExtension}"
-    }
+    fun suggestedFilename(request: ExportRequest): String =
+        ExportFilenamePolicy.suggestedFilename(request.format.fileExtension)
 
     private fun writeExport(content: String, extension: String): File {
         val exportDir = File(context.cacheDir, EXPORT_DIR_NAME)
         exportDir.mkdirs()
         cleanupOldExports(exportDir)
-        val file = File(exportDir, suggestedBaseName(extension))
+        val file = ExportFilenamePolicy.createUniqueFile(exportDir, extension)
         file.writeText(content, Charsets.UTF_8)
         return file
-    }
-
-    private fun suggestedBaseName(extension: String): String {
-        return "flockyou-detections_${dateFormat.format(Date())}.$extension"
     }
 
     private fun cleanupOldExports(exportDir: File) {
