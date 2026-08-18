@@ -392,7 +392,7 @@ class BackgroundAnalysisWorker @AssistedInject constructor(
         val priorityMode = inputData.getString(KEY_PRIORITY_MODE) ?: PRIORITY_NORMAL
         val specificDetectionIds = inputData.getStringArray(KEY_DETECTION_IDS)?.toList()
 
-        val aiSettings = aiSettingsRepository.settings.first()
+        val aiSettings = aiSettingsRepository.settingsSnapshot()
         if (!aiSettings.enabled) {
             if (BuildConfig.DEBUG) {
                 Log.d(TAG, "AI analysis disabled; skipping worker before foreground promotion")

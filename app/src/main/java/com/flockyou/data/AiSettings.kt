@@ -10,6 +10,8 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -500,6 +502,54 @@ class AiSettingsRepository @Inject constructor(
     }
 
     /**
+     * In-memory snapshot of the most recently hydrated [AiSettings].
+     *
+     * This is the repository-owned hot cache used by per-detection analysis paths so that
+     * they do not perform a DataStore disk read for every detection. It is a single source
+     * of truth: hydrated lazily on first [settingsSnapshot] call and invalidated on every
+     * settings write (see [edit]), so it never becomes an independently stale duplicate.
+     */
+    private val _settingsSnapshot = MutableStateFlow<AiSettings?>(null)
+
+    /**
+     * Return the current [AiSettings] snapshot with O(1) in-memory cost after first hydration.
+     *
+     * On first call (or after a settings write) this performs one DataStore read and caches
+     * the result. All subsequent calls until the next write return the cached value.
+     *
+     * Consistency semantics:
+     * - The value is always a full [AiSettings] (never null to callers).
+     * - The value reflects the latest persisted write (the cache is invalidated synchronously
+     *   by [edit] after every mutation).
+     * - Concurrent first-time callers may each perform one redundant read; this is benign and
+     *   cannot produce a stale value because invalidation happens on the write path.
+     */
+    suspend fun settingsSnapshot(): AiSettings {
+        _settingsSnapshot.value?.let { return it }
+        val loaded = settings.first()
+        _settingsSnapshot.value = loaded
+        return loaded
+    }
+
+    /**
+     * Invalidate the cached snapshot so the next [settingsSnapshot] re-hydrates from DataStore.
+     * Called automatically after every settings write; exposed for tests and external callers
+     * that need to force a refresh.
+     */
+    fun invalidateSnapshot() {
+        _settingsSnapshot.value = null
+    }
+
+    /**
+     * Single write chokepoint for DataStore mutations. Applies the transform and then
+     * invalidates the cached snapshot so hot-path readers never observe a stale value.
+     */
+    private suspend fun edit(transform: (MutablePreferences) -> Unit) {
+        context.aiSettingsDataStore.edit(transform)
+        _settingsSnapshot.value = null
+    }
+
+    /**
      * Get the HuggingFace token from encrypted storage.
      * Called synchronously since EncryptedSharedPreferences doesn't support flows.
      */
@@ -519,17 +569,20 @@ class AiSettingsRepository @Inject constructor(
     suspend fun setHuggingFaceToken(token: String) {
         try {
             encryptedPrefs.edit().putString(EncryptedKeys.HUGGINGFACE_TOKEN, token).apply()
+            // The token is folded into the AiSettings snapshot; invalidate so the next
+            // snapshot read re-hydrates and observes the new value.
+            invalidateSnapshot()
         } catch (e: Exception) {
             android.util.Log.e("AiSettingsRepository", "Failed to save encrypted token", e)
         }
     }
 
     suspend fun setEnabled(enabled: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.ENABLED] = enabled }
+        edit { it[Keys.ENABLED] = enabled }
     }
 
     suspend fun setModelDownloaded(downloaded: Boolean, sizeMb: Long = 0) {
-        context.aiSettingsDataStore.edit {
+        edit {
             it[Keys.MODEL_DOWNLOADED] = downloaded
             it[Keys.MODEL_SIZE_MB] = sizeMb
             if (downloaded) {
@@ -539,70 +592,70 @@ class AiSettingsRepository @Inject constructor(
     }
 
     suspend fun setSelectedModel(modelId: String) {
-        context.aiSettingsDataStore.edit { it[Keys.SELECTED_MODEL] = modelId }
+        edit { it[Keys.SELECTED_MODEL] = modelId }
     }
 
     suspend fun setPreferredEngine(engineId: String) {
-        context.aiSettingsDataStore.edit { it[Keys.PREFERRED_ENGINE] = engineId }
+        edit { it[Keys.PREFERRED_ENGINE] = engineId }
     }
 
     suspend fun setUseGpuAcceleration(useGpu: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.USE_GPU] = useGpu }
+        edit { it[Keys.USE_GPU] = useGpu }
     }
 
     suspend fun setUseNpuAcceleration(useNpu: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.USE_NPU] = useNpu }
+        edit { it[Keys.USE_NPU] = useNpu }
     }
 
     suspend fun setAnalyzeDetections(enabled: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.ANALYZE_DETECTIONS] = enabled }
+        edit { it[Keys.ANALYZE_DETECTIONS] = enabled }
     }
 
     suspend fun setGenerateThreatAssessments(enabled: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.GENERATE_THREAT_ASSESSMENTS] = enabled }
+        edit { it[Keys.GENERATE_THREAT_ASSESSMENTS] = enabled }
     }
 
     suspend fun setIdentifyUnknownDevices(enabled: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.IDENTIFY_UNKNOWN] = enabled }
+        edit { it[Keys.IDENTIFY_UNKNOWN] = enabled }
     }
 
     suspend fun setAutoAnalyzeNewDetections(enabled: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.AUTO_ANALYZE] = enabled }
+        edit { it[Keys.AUTO_ANALYZE] = enabled }
     }
 
     suspend fun setContextualAnalysis(enabled: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.CONTEXTUAL_ANALYSIS] = enabled }
+        edit { it[Keys.CONTEXTUAL_ANALYSIS] = enabled }
     }
 
     suspend fun setBatchAnalysis(enabled: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.BATCH_ANALYSIS] = enabled }
+        edit { it[Keys.BATCH_ANALYSIS] = enabled }
     }
 
     suspend fun setTrackFeedback(enabled: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.TRACK_FEEDBACK] = enabled }
+        edit { it[Keys.TRACK_FEEDBACK] = enabled }
     }
 
     suspend fun setFalsePositiveFiltering(enabled: Boolean) {
-        context.aiSettingsDataStore.edit { it[Keys.FALSE_POSITIVE_FILTERING] = enabled }
+        edit { it[Keys.FALSE_POSITIVE_FILTERING] = enabled }
     }
 
     suspend fun setMaxTokens(tokens: Int) {
-        context.aiSettingsDataStore.edit { it[Keys.MAX_TOKENS] = tokens.coerceIn(64, 512) }
+        edit { it[Keys.MAX_TOKENS] = tokens.coerceIn(64, 512) }
     }
 
     suspend fun setTemperature(tenths: Int) {
-        context.aiSettingsDataStore.edit { it[Keys.TEMPERATURE_TENTHS] = tenths.coerceIn(0, 10) }
+        edit { it[Keys.TEMPERATURE_TENTHS] = tenths.coerceIn(0, 10) }
     }
 
     suspend fun setPromptCompressionMode(mode: String) {
         // Validate against known modes
         val validModes = PromptCompressionMode.entries.map { it.id }
         val safeMode = if (mode in validModes) mode else "auto"
-        context.aiSettingsDataStore.edit { it[Keys.PROMPT_COMPRESSION_MODE] = safeMode }
+        edit { it[Keys.PROMPT_COMPRESSION_MODE] = safeMode }
     }
 
     suspend fun clearSettings() {
-        context.aiSettingsDataStore.edit { it.clear() }
+        edit { it.clear() }
     }
 }
 
