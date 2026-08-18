@@ -111,24 +111,24 @@ class EphemeralDetectionRepository @Inject constructor(
     suspend fun insertDetection(detection: Detection) = mutex.withLock {
         val current = _detections.value.toMutableList()
         current.add(0, detection)
-        // Enforce memory limit - keep most recent detections
+        // Enforce memory limit - keep most recent detections (drop the single oldest).
         if (current.size > MAX_DETECTIONS) {
-            android.util.Log.d(TAG, "Memory limit reached (${current.size}), evicting ${current.size - MAX_DETECTIONS} oldest detections")
-            _detections.value = current.take(MAX_DETECTIONS)
-        } else {
-            _detections.value = current
+            current.removeAt(current.lastIndex)
         }
+        _detections.value = current
     }
 
     suspend fun insertDetections(detections: List<Detection>) = mutex.withLock {
-        val current = _detections.value.toMutableList()
-        current.addAll(0, detections)
-        // Enforce memory limit - keep most recent detections
-        if (current.size > MAX_DETECTIONS) {
-            android.util.Log.d(TAG, "Memory limit reached (${current.size}), evicting ${current.size - MAX_DETECTIONS} oldest detections")
-            _detections.value = current.take(MAX_DETECTIONS)
+        val current = _detections.value
+        // Prepend the batch in O(current + batch) instead of per-element shifting.
+        val combined = ArrayList<Detection>(detections.size + current.size)
+        combined.addAll(detections)
+        combined.addAll(current)
+        // Enforce memory limit - keep most recent detections.
+        if (combined.size > MAX_DETECTIONS) {
+            _detections.value = combined.take(MAX_DETECTIONS)
         } else {
-            _detections.value = current
+            _detections.value = combined
         }
     }
 
@@ -167,8 +167,7 @@ class EphemeralDetectionRepository @Inject constructor(
     }
 
     suspend fun markOldInactive(beforeMillis: Long) = mutex.withLock {
-        val current = _detections.value.toMutableList()
-        _detections.value = current.map { detection ->
+        _detections.value = _detections.value.map { detection ->
             if (detection.lastSeenTimestamp < beforeMillis && detection.isActive) {
                 detection.copy(isActive = false)
             } else {
@@ -237,13 +236,11 @@ class EphemeralDetectionRepository @Inject constructor(
             } else {
                 val mutableList = currentList.toMutableList()
                 mutableList.add(0, detection)
-                // Enforce memory limit - keep most recent detections
+                // Enforce memory limit - keep most recent detections (drop the single oldest).
                 if (mutableList.size > MAX_DETECTIONS) {
-                    Log.d(TAG, "Memory limit reached (${mutableList.size}), evicting ${mutableList.size - MAX_DETECTIONS} oldest detections")
-                    _detections.value = mutableList.take(MAX_DETECTIONS)
-                } else {
-                    _detections.value = mutableList
+                    mutableList.removeAt(mutableList.lastIndex)
                 }
+                _detections.value = mutableList
                 true
             }
         }
