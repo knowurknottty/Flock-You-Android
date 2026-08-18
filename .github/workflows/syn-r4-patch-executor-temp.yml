@@ -1,0 +1,77 @@
+name: Temporary Syn R4 Patch Executor
+
+on:
+  pull_request:
+    types: [edited]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  apply:
+    if: >-
+      github.repository == 'knowurknottty/Flock-You-Android' &&
+      github.event.pull_request.number == 6 &&
+      github.event.pull_request.head.ref == 'maxstats/syn-runtime-r4' &&
+      github.event.pull_request.head.sha == 'baaa548bac9979bd0e16d6d3aa46b69fc72926c6'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact reviewed Syn head
+        uses: actions/checkout@v4
+        with:
+          ref: baaa548bac9979bd0e16d6d3aa46b69fc72926c6
+          fetch-depth: 0
+
+      - name: Verify exact authority and script syntax
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "baaa548bac9979bd0e16d6d3aa46b69fc72926c6"
+          git merge-base --is-ancestor 9dcde5dc83164a2a625eaec2bca451b46fb9c736 HEAD
+          python3 -m py_compile tools/maxstats_syn_apply.py
+
+      - name: Apply assertion-guarded runtime patch
+        run: python3 tools/maxstats_syn_apply.py
+
+      - name: Validate generated production diff
+        shell: bash
+        run: |
+          git diff --check
+          git status --short
+          test -n "$(git status --short app/src/main)"
+
+      - name: Archive exact patched source
+        uses: actions/upload-artifact@v4
+        with:
+          name: syn-r4-patched-source
+          path: |
+            app/src/main/AndroidManifest.xml
+            app/src/main/java/com/flockyou/service/ScanningService.kt
+            app/src/main/java/com/flockyou/service/ScanningServiceModels.kt
+            app/src/main/java/com/flockyou/service/ScanningServiceState.kt
+            app/src/main/java/com/flockyou/service/ScanningRuntimePolicy.kt
+            app/src/main/java/com/flockyou/service/ServiceRestartReceiver.kt
+            app/src/main/java/com/flockyou/service/SubsystemManager.kt
+
+      - name: Commit and push production diff to Syn lane
+        id: push
+        continue-on-error: true
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/AndroidManifest.xml app/src/main/java/com/flockyou/service
+          git diff --cached --check
+          git diff --cached --stat
+          git commit -m "perf: harden scanner runtime lifecycle"
+          git push origin HEAD:maxstats/syn-runtime-r4
+
+      - name: Report execution on PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+        shell: bash
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/6/comments" \
+            -f body="Trusted Syn R4 executor run ${GITHUB_RUN_ID}: job=${{ job.status }}, push=${PUSH_OUTCOME:-not-run}."
