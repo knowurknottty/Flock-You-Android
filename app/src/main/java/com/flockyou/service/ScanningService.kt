@@ -309,12 +309,8 @@ class ScanningService : Service() {
     private var notificationSettingsJob: Job? = null
     private var detectionSettingsJob: Job? = null
 
-    // Location update jobs (for proper lifecycle management)
-    internal var cellularLocationJob: Job? = null
-    internal var rogueWifiLocationJob: Job? = null
-    internal var rfLocationJob: Job? = null
-    internal var ultrasonicLocationJob: Job? = null
-    internal var gnssLocationJob: Job? = null
+    // Rogue WiFi suspicious-network collector. Location propagation is event-driven
+    // through syncCurrentLocationToSubsystems(), not five polling coroutines.
     internal var suspiciousNetworksJob: Job? = null
 
     // Cellular monitor
@@ -968,6 +964,10 @@ class ScanningService : Service() {
 
         // Start GNSS satellite monitoring (uses location permission already granted)
         startGnssMonitoring()
+
+        // If lastLocation resolved before all monitors were constructed, perform one
+        // startup synchronization. Later location results fan out from updateLocation().
+        syncCurrentLocationToSubsystems()
 
         // Initialize and start detector health monitoring
         initializeDetectorHealth()
@@ -1986,6 +1986,22 @@ class ScanningService : Service() {
 
     // ==================== Location ====================
 
+    /**
+     * Push the latest location to every active subsystem exactly when location state
+     * changes or a subsystem starts. This replaces five independent 5-second loops.
+     */
+    internal fun syncCurrentLocationToSubsystems() {
+        val location = currentLocation ?: return
+        val latitude = location.latitude
+        val longitude = location.longitude
+
+        cellularMonitor?.updateLocation(latitude, longitude)
+        rogueWifiMonitor?.updateLocation(latitude, longitude)
+        rfSignalAnalyzer?.updateLocation(latitude, longitude)
+        ultrasonicDetector?.updateLocation(latitude, longitude)
+        gnssSatelliteMonitor?.updateLocation(latitude, longitude)
+    }
+
     @SuppressLint("MissingPermission")
     private fun updateLocation() {
         if (!hasLocationPermissions()) {
@@ -1997,6 +2013,7 @@ class ScanningService : Service() {
             .addOnSuccessListener { location ->
                 currentLocation = location
                 locationStatus.value = if (location != null) {
+                    syncCurrentLocationToSubsystems()
                     SubsystemStatus.Active
                 } else {
                     SubsystemStatus.Error(-1, "No location available")

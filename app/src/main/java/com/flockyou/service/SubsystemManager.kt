@@ -15,10 +15,7 @@ import com.flockyou.R
 import com.flockyou.data.model.*
 import com.flockyou.detection.handler.SatelliteDetectionContext
 import com.flockyou.detection.handler.SatelliteDetectionHandler
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.*
 
@@ -54,6 +51,7 @@ internal fun ScanningService.startCellularMonitoring() {
     }
 
     cellularMonitor?.startMonitoring()
+    syncCurrentLocationToSubsystems()
     ScanningServiceState.cellularStatus.value = SubsystemStatus.Active
     broadcastSubsystemStatus()
     Log.d(TAG, "Cellular monitoring started")
@@ -149,20 +147,10 @@ internal fun ScanningService.startCellularMonitoring() {
         }
     }
 
-    // Also update cellular location when we get GPS updates
-    cellularLocationJob = serviceScope.launch {
-        while (ScanningServiceState.isScanning.value) {
-            currentLocation?.let { loc ->
-                cellularMonitor?.updateLocation(loc.latitude, loc.longitude)
-            }
-            delay(5000)
-        }
-    }
+    // Location is propagated by ScanningService.syncCurrentLocationToSubsystems().
 }
 
 internal fun ScanningService.stopCellularMonitoring() {
-    cellularLocationJob?.cancel()
-    cellularLocationJob = null
     cellularAnomalyJob?.cancel()
     cellularAnomalyJob = null
     cellularStatusJob?.cancel()
@@ -322,6 +310,7 @@ internal fun ScanningService.startRogueWifiMonitoring() {
     Log.d(TAG, "Starting rogue WiFi monitoring")
 
     rogueWifiMonitor?.startMonitoring()
+    syncCurrentLocationToSubsystems()
 
     // Collect status updates
     rogueWifiStatusJob = serviceScope.launch {
@@ -396,20 +385,10 @@ internal fun ScanningService.startRogueWifiMonitoring() {
         }
     }
 
-    // Update monitor location when GPS updates
-    rogueWifiLocationJob = serviceScope.launch {
-        while (ScanningServiceState.isScanning.value) {
-            currentLocation?.let { loc ->
-                rogueWifiMonitor?.updateLocation(loc.latitude, loc.longitude)
-            }
-            delay(5000)
-        }
-    }
+    // Location is propagated by ScanningService.syncCurrentLocationToSubsystems().
 }
 
 internal fun ScanningService.stopRogueWifiMonitoring() {
-    rogueWifiLocationJob?.cancel()
-    rogueWifiLocationJob = null
     suspiciousNetworksJob?.cancel()
     suspiciousNetworksJob = null
     rogueWifiStatusJob?.cancel()
@@ -435,6 +414,7 @@ internal fun ScanningService.startRfSignalAnalysis() {
     Log.d(TAG, "Starting RF signal analysis")
 
     rfSignalAnalyzer?.startMonitoring()
+    syncCurrentLocationToSubsystems()
 
     // Collect status updates
     rfStatusJob = serviceScope.launch {
@@ -523,20 +503,10 @@ internal fun ScanningService.startRfSignalAnalysis() {
         }
     }
 
-    // Update analyzer location
-    rfLocationJob = serviceScope.launch {
-        while (ScanningServiceState.isScanning.value) {
-            currentLocation?.let { loc ->
-                rfSignalAnalyzer?.updateLocation(loc.latitude, loc.longitude)
-            }
-            delay(5000)
-        }
-    }
+    // Location is propagated by ScanningService.syncCurrentLocationToSubsystems().
 }
 
 internal fun ScanningService.stopRfSignalAnalysis() {
-    rfLocationJob?.cancel()
-    rfLocationJob = null
     rfStatusJob?.cancel()
     rfStatusJob = null
     rfAnomalyJob?.cancel()
@@ -570,6 +540,7 @@ internal fun ScanningService.startUltrasonicDetection() {
     Log.d(TAG, "Starting ultrasonic beacon detection (user consented, audio encrypted in memory)")
 
     ultrasonicDetector?.startMonitoring()
+    syncCurrentLocationToSubsystems()
 
     // Collect status updates
     ultrasonicStatusJob = serviceScope.launch {
@@ -640,20 +611,10 @@ internal fun ScanningService.startUltrasonicDetection() {
         }
     }
 
-    // Update detector location
-    ultrasonicLocationJob = serviceScope.launch {
-        while (ScanningServiceState.isScanning.value) {
-            currentLocation?.let { loc ->
-                ultrasonicDetector?.updateLocation(loc.latitude, loc.longitude)
-            }
-            delay(5000)
-        }
-    }
+    // Location is propagated by ScanningService.syncCurrentLocationToSubsystems().
 }
 
 internal fun ScanningService.stopUltrasonicDetection() {
-    ultrasonicLocationJob?.cancel()
-    ultrasonicLocationJob = null
     ultrasonicStatusJob?.cancel()
     ultrasonicStatusJob = null
     ultrasonicAnomalyJob?.cancel()
@@ -691,6 +652,7 @@ internal fun ScanningService.startGnssMonitoring() {
     ScanningServiceState.gnssMonitorStatus.value = SubsystemStatus.Active
 
     gnssSatelliteMonitor?.startMonitoring()
+    syncCurrentLocationToSubsystems()
 
     // Collect status updates
     gnssStatusJob = serviceScope.launch {
@@ -781,20 +743,10 @@ internal fun ScanningService.startGnssMonitoring() {
         }
     }
 
-    // Update monitor location
-    gnssLocationJob = serviceScope.launch {
-        while (ScanningServiceState.isScanning.value) {
-            currentLocation?.let { loc ->
-                gnssSatelliteMonitor?.updateLocation(loc.latitude, loc.longitude)
-            }
-            delay(5000)
-        }
-    }
+    // Location is propagated by ScanningService.syncCurrentLocationToSubsystems().
 }
 
 internal fun ScanningService.stopGnssMonitoring() {
-    gnssLocationJob?.cancel()
-    gnssLocationJob = null
     gnssStatusJob?.cancel()
     gnssStatusJob = null
     gnssAnomalyJob?.cancel()
