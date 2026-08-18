@@ -322,6 +322,29 @@ class MainViewModel @Inject constructor(
     internal val _prioritizedEnrichmentIds = MutableStateFlow<Set<String>>(emptySet())
     val prioritizedEnrichmentIds: StateFlow<Set<String>> = _prioritizedEnrichmentIds.asStateFlow()
 
+    // Narrow history query projection: scanner/RF/GNSS/Flipper telemetry updates no longer
+    // re-run the complete detection-history filter/sort path.
+    private val historyQuery: Flow<DetectionHistoryQuery> = _uiState
+        .map(DetectionHistoryQuery::from)
+        .distinctUntilChanged()
+
+    val filteredHistoryDetections: StateFlow<List<Detection>> = combine(
+        repository.allDetections,
+        historyQuery
+    ) { detections, query ->
+        DetectionHistoryPresentationPolicy.filterAndSort(
+            detections = detections,
+            query = query,
+            nowMillis = System.currentTimeMillis()
+        )
+    }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList()
+        )
+
     init {
         // The serviceConnection is now a singleton injected via Hilt
         // It is automatically bound when created by the provider
