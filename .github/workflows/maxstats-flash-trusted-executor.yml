@@ -28,10 +28,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git hash-object .github/scripts/apply_flash_map_patch.py)" = "cd4815791d0ecd51cd0f91d8353bffc7635ac391"
+          test "$(git hash-object .github/scripts/apply_flash_map_patch_v2.py)" = "39464eef41108929f5d7992d373fd8ec3a56f3f0"
           test "$(git hash-object app/src/main/java/com/flockyou/ui/screens/MapScreen.kt)" = "e06cd81402868d5bcc391c35617d8002b9b3cbde"
 
       - name: Apply assertion-guarded source transform
-        run: python3 .github/scripts/apply_flash_map_patch.py
+        run: python3 .github/scripts/apply_flash_map_patch_v2.py
 
       - name: Verify production-only diff
         shell: bash
