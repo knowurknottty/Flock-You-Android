@@ -124,6 +124,92 @@ class TestModeOrchestratorLifecycleTest {
         assertEquals(-86.5861, detection.captured.longitude ?: Double.NaN, 0.0000001)
     }
 
+
+    @Test
+    fun `clearing synthetic location prevents stale geotagging`() = runBlocking {
+        val repository = mockk<DetectionRepository>(relaxed = true)
+        coEvery { repository.upsertDetection(any()) } returns true
+        val subject = TestModeOrchestrator(
+            context = mockk<Context>(relaxed = true),
+            scenarioProvider = TestScenarioProvider(),
+            detectionRepository = repository
+        )
+        orchestrator = subject
+
+        subject.updateConfig(
+            TestModeConfig(
+                dataEmissionIntervalMs = 30_000L,
+                syntheticLatitude = 34.7304,
+                syntheticLongitude = -86.5861
+            )
+        )
+        subject.updateConfig(TestModeConfig(dataEmissionIntervalMs = 30_000L))
+        subject.startScenario(TestScenario.TrackerFollowing.id)
+        delay(150)
+
+        val bleScanner = subject.privateBleScanner()
+        bleScanner.stop()
+        clearMocks(repository, answers = false, recordedCalls = true)
+        bleScanner.emitResult(
+            MockBleScanResult(
+                device = MockBleDevice(
+                    name = "cleared-location",
+                    address = "AA:BB:CC:DD:EE:02",
+                    rssi = -58
+                ),
+                rssi = -58
+            )
+        )
+        delay(150)
+
+        val detection = slot<Detection>()
+        coVerify(exactly = 1) { repository.upsertDetection(capture(detection)) }
+        assertEquals(null, detection.captured.latitude)
+        assertEquals(null, detection.captured.longitude)
+    }
+
+    @Test
+    fun `out of range synthetic location is rejected`() = runBlocking {
+        val repository = mockk<DetectionRepository>(relaxed = true)
+        coEvery { repository.upsertDetection(any()) } returns true
+        val subject = TestModeOrchestrator(
+            context = mockk<Context>(relaxed = true),
+            scenarioProvider = TestScenarioProvider(),
+            detectionRepository = repository
+        )
+        orchestrator = subject
+
+        subject.updateConfig(
+            TestModeConfig(
+                dataEmissionIntervalMs = 30_000L,
+                syntheticLatitude = 123.0,
+                syntheticLongitude = -222.0
+            )
+        )
+        subject.startScenario(TestScenario.TrackerFollowing.id)
+        delay(150)
+
+        val bleScanner = subject.privateBleScanner()
+        bleScanner.stop()
+        clearMocks(repository, answers = false, recordedCalls = true)
+        bleScanner.emitResult(
+            MockBleScanResult(
+                device = MockBleDevice(
+                    name = "invalid-location",
+                    address = "AA:BB:CC:DD:EE:03",
+                    rssi = -58
+                ),
+                rssi = -58
+            )
+        )
+        delay(150)
+
+        val detection = slot<Detection>()
+        coVerify(exactly = 1) { repository.upsertDetection(capture(detection)) }
+        assertEquals(null, detection.captured.latitude)
+        assertEquals(null, detection.captured.longitude)
+    }
+
     private fun TestModeOrchestrator.privateBleScanner(): MockBleScanner {
         val field = TestModeOrchestrator::class.java.getDeclaredField("mockBleScanner")
         field.isAccessible = true
