@@ -60,6 +60,7 @@ fun MapScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val filteredDetections by viewModel.detectionsWithLocation.collectAsStateWithLifecycle()
     val hasAnyDetections by viewModel.hasAnyDetections.collectAsStateWithLifecycle()
+    val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     var selectedDetection by remember { mutableStateOf<Detection?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var zoomBucket by remember { mutableStateOf(MapZoomBucket.WORLD) }
@@ -102,11 +103,11 @@ fun MapScreen(
 
     // This map has stored detection coordinates, not an Android Location accuracy fix.
     // Never infer GPS +/- meters from the surveillance device RSSI/signal-strength field.
-    LaunchedEffect(filteredDetections, hasAnyDetections) {
+    LaunchedEffect(filteredDetections, hasAnyDetections, isScanning) {
         gpsStatus = MapPresentationPolicy.gpsStatus(
             hasLocatedDetections = filteredDetections.isNotEmpty(),
             hasAnyDetections = hasAnyDetections,
-            isScanning = false
+            isScanning = isScanning
         )
         userLocation = filteredDetections
             .maxByOrNull { it.timestamp }
@@ -308,6 +309,7 @@ fun MapScreen(
             if (!hasLocationData) {
                 MapEmptyState(
                     hasDetections = hasAnyDetections,
+                    isScanning = isScanning,
                     onRequestPermissions = if (hasAnyDetections) requestLocationPermissions else startScanning
                 )
             } else {
@@ -930,12 +932,13 @@ private fun GpsStatusIndicator(
 @Composable
 private fun MapEmptyState(
     hasDetections: Boolean,
+    isScanning: Boolean,
     onRequestPermissions: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val presentation = MapPresentationPolicy.emptyStatePresentation(
         hasDetections = hasDetections,
-        isScanning = false
+        isScanning = isScanning
     )
     Box(
         modifier = modifier.fillMaxSize(),

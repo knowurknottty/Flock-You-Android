@@ -57,15 +57,11 @@ object MapPresentationPolicy {
         hasLocatedDetections: Boolean,
         hasAnyDetections: Boolean,
         isScanning: Boolean
-    ): MapGpsStatus {
-        // Initial extraction intentionally preserves the current behavior.
-        @Suppress("UNUSED_VARIABLE")
-        val scanningState = isScanning
-        return when {
-            hasLocatedDetections -> MapGpsStatus.ACTIVE
-            hasAnyDetections -> MapGpsStatus.DISABLED
-            else -> MapGpsStatus.SEARCHING
-        }
+    ): MapGpsStatus = when {
+        hasLocatedDetections -> MapGpsStatus.ACTIVE
+        hasAnyDetections -> MapGpsStatus.DISABLED
+        isScanning -> MapGpsStatus.SEARCHING
+        else -> MapGpsStatus.IDLE
     }
 
     fun emptyStatePresentation(
@@ -76,15 +72,20 @@ object MapPresentationPolicy {
         // The scanning-state truthfulness regression is pinned separately before changing it.
         @Suppress("UNUSED_VARIABLE")
         val scanningState = isScanning
-        return if (hasDetections) {
-            MapEmptyStatePresentation(
+        return when {
+            hasDetections -> MapEmptyStatePresentation(
                 title = "No Location Data",
                 body = "Detections were found but none have location data. Enable GPS permission to see detections on the map.",
                 actionLabel = "Enable Location",
                 actionEnabled = true
             )
-        } else {
-            MapEmptyStatePresentation(
+            isScanning -> MapEmptyStatePresentation(
+                title = "No Detections Yet",
+                body = "Scanning is active. Detections with location data will appear on the map when found.",
+                actionLabel = "Scanning...",
+                actionEnabled = false
+            )
+            else -> MapEmptyStatePresentation(
                 title = "No Detections Yet",
                 body = "Start scanning to detect surveillance devices. They will appear on the map when found.",
                 actionLabel = "Start Scanning",

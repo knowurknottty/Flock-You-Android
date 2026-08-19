@@ -8,6 +8,7 @@ import com.flockyou.data.model.DeviceType
 import com.flockyou.data.model.SignalStrength
 import com.flockyou.data.model.ThreatLevel
 import com.flockyou.data.repository.DetectionRepository
+import com.flockyou.service.ScanningServiceConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import javax.inject.Inject
@@ -28,11 +29,20 @@ data class MapUiState(
 
 @HiltViewModel
 class MapViewModel @Inject constructor(
-    private val repository: DetectionRepository
+    private val repository: DetectionRepository,
+    private val serviceConnection: ScanningServiceConnection
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MapUiState())
     val uiState: StateFlow<MapUiState> = _uiState.asStateFlow()
+
+    /** Cross-process scanning truth mirrored from the singleton IPC connection. */
+    val isScanning: StateFlow<Boolean> = serviceConnection.isScanning
+
+    init {
+        // AppModule auto-binds the singleton connection; ask for an immediate authoritative sync.
+        serviceConnection.requestState()
+    }
 
     val hasAnyDetections: StateFlow<Boolean> = repository.totalDetectionCount
         .map { it > 0 }
