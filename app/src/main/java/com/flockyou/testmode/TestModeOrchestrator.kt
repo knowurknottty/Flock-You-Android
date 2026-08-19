@@ -175,8 +175,9 @@ class TestModeOrchestrator @Inject constructor(
         _config.value = newConfig
         val latitude = newConfig.syntheticLatitude
         val longitude = newConfig.syntheticLongitude
-        if (latitude != null && longitude != null && latitude in -90.0..90.0 && longitude in -180.0..180.0) {
-            updateLocation(latitude, longitude)
+        val syntheticLocation = SyntheticLocationPolicy.validated(latitude, longitude)
+        if (syntheticLocation != null) {
+            updateLocation(syntheticLocation.latitude, syntheticLocation.longitude)
         } else {
             currentLatitude = null
             currentLongitude = null
