@@ -129,6 +129,8 @@ class TestModeOrchestrator @Inject constructor(
             _config.update { it.copy(activeScenarioId = scenarioId) }
             _status.update {
                 it.copy(
+                    isActive = true,
+                    startTime = it.startTime ?: System.currentTimeMillis(),
                     activeScenarioId = scenarioId,
                     activeScenarioName = scenario.name,
                     detectionCount = 0
