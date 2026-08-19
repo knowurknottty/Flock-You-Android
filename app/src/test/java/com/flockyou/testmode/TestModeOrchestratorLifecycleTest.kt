@@ -69,6 +69,45 @@ class TestModeOrchestratorLifecycleTest {
     }
 
     @Test
+    fun `scenario start owns a fresh runtime clock independent of test mode enable`() = runBlocking {
+        val subject = TestModeOrchestrator(
+            context = mockk<Context>(relaxed = true),
+            scenarioProvider = TestScenarioProvider(),
+            detectionRepository = mockk(relaxed = true)
+        )
+        orchestrator = subject
+
+        subject.enableTestMode()
+        delay(50)
+        val earliestScenarioStart = System.currentTimeMillis()
+        subject.startScenario(TestScenario.HighThreatEnvironment.id)
+        delay(150)
+
+        val scenarioStart = subject.status.value.startTime
+        assertTrue(scenarioStart != null && scenarioStart >= earliestScenarioStart)
+    }
+
+    @Test
+    fun `stopping scenario clears scenario runtime clock but keeps test mode active`() = runBlocking {
+        val subject = TestModeOrchestrator(
+            context = mockk<Context>(relaxed = true),
+            scenarioProvider = TestScenarioProvider(),
+            detectionRepository = mockk(relaxed = true)
+        )
+        orchestrator = subject
+
+        subject.enableTestMode()
+        subject.startScenario(TestScenario.HighThreatEnvironment.id)
+        delay(150)
+        subject.stopScenario()
+
+        assertTrue(subject.status.value.isActive)
+        assertEquals(null, subject.status.value.activeScenarioId)
+        assertEquals(null, subject.status.value.activeScenarioName)
+        assertEquals(null, subject.status.value.startTime)
+    }
+
+    @Test
     fun `restarting scenario leaves exactly one active BLE collector`() = runBlocking {
         val repository = mockk<DetectionRepository>(relaxed = true)
         coEvery { repository.upsertDetection(any()) } returns true
