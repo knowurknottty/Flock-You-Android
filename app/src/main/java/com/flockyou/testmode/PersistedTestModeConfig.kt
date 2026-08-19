@@ -3,7 +3,6 @@ package com.flockyou.testmode
 /** Pure persistence projection used by the DataStore adapter. */
 internal data class PersistedTestModeConfig(
     val enabled: Boolean,
-    val activeScenarioId: String?,
     val autoAdvanceScenario: Boolean,
     val dataEmissionIntervalMs: Long,
     val simulateSignalVariation: Boolean,
@@ -13,7 +12,7 @@ internal data class PersistedTestModeConfig(
 ) {
     fun toConfig(): TestModeConfig = TestModeConfig(
         enabled = enabled,
-        activeScenarioId = activeScenarioId,
+        activeScenarioId = null,
         autoAdvanceScenario = autoAdvanceScenario,
         dataEmissionIntervalMs = dataEmissionIntervalMs,
         simulateSignalVariation = simulateSignalVariation,
@@ -25,7 +24,6 @@ internal data class PersistedTestModeConfig(
     companion object {
         fun fromConfig(config: TestModeConfig): PersistedTestModeConfig = PersistedTestModeConfig(
             enabled = config.enabled,
-            activeScenarioId = config.activeScenarioId,
             autoAdvanceScenario = config.autoAdvanceScenario,
             dataEmissionIntervalMs = config.dataEmissionIntervalMs,
             simulateSignalVariation = config.simulateSignalVariation,

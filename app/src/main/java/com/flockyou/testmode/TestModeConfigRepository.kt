@@ -52,7 +52,6 @@ class TestModeConfigRepository @Inject constructor(
     val config: Flow<TestModeConfig> = context.testModeDataStore.data.map { prefs ->
         PersistedTestModeConfig(
             enabled = prefs[Keys.ENABLED] ?: false,
-            activeScenarioId = prefs[Keys.ACTIVE_SCENARIO_ID],
             autoAdvanceScenario = prefs[Keys.AUTO_ADVANCE] ?: true,
             dataEmissionIntervalMs = prefs[Keys.EMISSION_INTERVAL] ?: TestModeConfig.DEFAULT_EMISSION_INTERVAL_MS,
             simulateSignalVariation = prefs[Keys.SIMULATE_VARIATION] ?: true,
@@ -79,8 +78,7 @@ class TestModeConfigRepository @Inject constructor(
         val persisted = PersistedTestModeConfig.fromConfig(config)
         context.testModeDataStore.edit { prefs ->
             prefs[Keys.ENABLED] = persisted.enabled
-            persisted.activeScenarioId?.let { prefs[Keys.ACTIVE_SCENARIO_ID] = it }
-                ?: prefs.remove(Keys.ACTIVE_SCENARIO_ID)
+            prefs.remove(Keys.ACTIVE_SCENARIO_ID)
             prefs[Keys.AUTO_ADVANCE] = persisted.autoAdvanceScenario
             prefs[Keys.EMISSION_INTERVAL] = persisted.dataEmissionIntervalMs
             prefs[Keys.SIMULATE_VARIATION] = persisted.simulateSignalVariation
@@ -182,7 +180,8 @@ class TestModeConfigRepository @Inject constructor(
     suspend fun startScenario(scenarioId: String) {
         context.testModeDataStore.edit { prefs ->
             prefs[Keys.ENABLED] = true
-            prefs[Keys.ACTIVE_SCENARIO_ID] = scenarioId
+            // Scenario execution is runtime-only. Never resurrect synthetic generation after process death.
+            prefs.remove(Keys.ACTIVE_SCENARIO_ID)
         }
     }
 
