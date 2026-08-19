@@ -21,13 +21,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
@@ -114,8 +115,9 @@ class TestModeOrchestrator @Inject constructor(
 
         Log.i(TAG, "Starting scenario: ${scenario.name}")
 
-        scenarioJob?.cancel()
+        val previousJob = scenarioJob
         scenarioJob = scope.launch {
+            previousJob?.cancelAndJoin()
             _config.update { it.copy(activeScenarioId = scenarioId) }
             _status.update {
                 it.copy(
@@ -261,9 +263,10 @@ class TestModeOrchestrator @Inject constructor(
         mockCellularScanner.stop()
     }
 
-    private suspend fun collectAndProcessMockData() {
-        // Collect from all active mock scanners
-        scope.launch {
+    private suspend fun collectAndProcessMockData(): Nothing = coroutineScope {
+        // Collectors are children of the active scenario session. Cancelling or replacing
+        // the scenario therefore cancels the entire collector set before a new one starts.
+        launch {
             mockWifiScanner.scanResults.collect { results ->
                 try {
                     processWifiResults(results)
@@ -273,7 +276,7 @@ class TestModeOrchestrator @Inject constructor(
             }
         }
 
-        scope.launch {
+        launch {
             mockBleScanner.mockResults.collect { result ->
                 try {
                     processBleResult(result)
@@ -283,7 +286,7 @@ class TestModeOrchestrator @Inject constructor(
             }
         }
 
-        scope.launch {
+        launch {
             mockCellularScanner.anomalies.collect { anomalies ->
                 try {
                     processCellularAnomalies(anomalies)
@@ -293,10 +296,8 @@ class TestModeOrchestrator @Inject constructor(
             }
         }
 
-        // Keep running until cancelled
-        while (scope.isActive) {
-            delay(1000)
-        }
+        // Keep the scenario session alive until it is explicitly stopped or replaced.
+        awaitCancellation()
     }
 
     private suspend fun processWifiResults(results: List<android.net.wifi.ScanResult>) {
