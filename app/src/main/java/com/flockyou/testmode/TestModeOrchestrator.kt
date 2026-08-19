@@ -90,7 +90,7 @@ class TestModeOrchestrator @Inject constructor(
         Log.i(TAG, "Enabling test mode${scenarioId?.let { " with scenario: $it" } ?: ""}")
 
         _config.update { it.copy(enabled = true, activeScenarioId = scenarioId) }
-        _status.update { it.copy(isActive = true, startTime = System.currentTimeMillis()) }
+        _status.update { it.copy(isActive = true, startTime = null) }
 
         if (scenarioId != null) {
             startScenario(scenarioId)
@@ -130,7 +130,7 @@ class TestModeOrchestrator @Inject constructor(
             _status.update {
                 it.copy(
                     isActive = true,
-                    startTime = it.startTime ?: System.currentTimeMillis(),
+                    startTime = System.currentTimeMillis(),
                     activeScenarioId = scenarioId,
                     activeScenarioName = scenario.name,
                     detectionCount = 0
@@ -162,7 +162,7 @@ class TestModeOrchestrator @Inject constructor(
         stopAllMockScanners()
 
         _config.update { it.copy(activeScenarioId = null) }
-        _status.update { it.copy(activeScenarioId = null, activeScenarioName = null) }
+        _status.update { it.copy(activeScenarioId = null, activeScenarioName = null, startTime = null) }
     }
 
     /**
