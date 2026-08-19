@@ -7,6 +7,7 @@ import com.flockyou.data.model.DeviceType
 import com.flockyou.data.model.SignalStrength
 import com.flockyou.data.model.ThreatLevel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -86,6 +87,41 @@ class MapPresentationPolicyTest {
         val filtered = MapPresentationPolicy.filterDetections(detections, state, now)
 
         assertEquals(listOf("keep"), filtered.map { it.id })
+    }
+
+    @Test
+    fun gpsStatus_isIdleWhenScannerIsNotRunningAndNoDetectionsExist() {
+        assertEquals(
+            MapGpsStatus.IDLE,
+            MapPresentationPolicy.gpsStatus(
+                hasLocatedDetections = false,
+                hasAnyDetections = false,
+                isScanning = false
+            )
+        )
+    }
+
+    @Test
+    fun gpsStatus_searchesWhenScannerIsRunningWithoutLocatedDetections() {
+        assertEquals(
+            MapGpsStatus.SEARCHING,
+            MapPresentationPolicy.gpsStatus(
+                hasLocatedDetections = false,
+                hasAnyDetections = false,
+                isScanning = true
+            )
+        )
+    }
+
+    @Test
+    fun emptyState_doesNotOfferStartScanningWhenScannerIsAlreadyRunning() {
+        val presentation = MapPresentationPolicy.emptyStatePresentation(
+            hasDetections = false,
+            isScanning = true
+        )
+
+        assertEquals("Scanning...", presentation.actionLabel)
+        assertFalse(presentation.actionEnabled)
     }
 
     private fun detection(
