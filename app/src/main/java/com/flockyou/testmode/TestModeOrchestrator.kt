@@ -165,8 +165,16 @@ class TestModeOrchestrator @Inject constructor(
      */
     fun updateConfig(newConfig: TestModeConfig) {
         _config.value = newConfig
-        if (newConfig.syntheticLatitude != null && newConfig.syntheticLongitude != null) {
-            updateLocation(newConfig.syntheticLatitude, newConfig.syntheticLongitude)
+        val latitude = newConfig.syntheticLatitude
+        val longitude = newConfig.syntheticLongitude
+        if (latitude != null && longitude != null && latitude in -90.0..90.0 && longitude in -180.0..180.0) {
+            updateLocation(latitude, longitude)
+        } else {
+            currentLatitude = null
+            currentLongitude = null
+            if (latitude != null || longitude != null) {
+                Log.w(TAG, "Rejected incomplete or out-of-range synthetic location")
+            }
         }
         mockWifiScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
         mockBleScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
