@@ -7,13 +7,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.flockyou.data.model.ThreatLevel
+import com.flockyou.testmode.SyntheticLocationPolicy
 import com.flockyou.testmode.TestModeConfig
 import com.flockyou.testmode.TestModeStatus
 import com.flockyou.testmode.TestScenario
@@ -30,8 +33,8 @@ fun TestModeSettingsScreen(
     viewModel: TestModeSettingsViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit
 ) {
-    val config by viewModel.config.collectAsState()
-    val status by viewModel.status.collectAsState()
+    val config by viewModel.config.collectAsStateWithLifecycle()
+    val status by viewModel.status.collectAsStateWithLifecycle()
     val scenarios = viewModel.scenarios
 
     Scaffold(
@@ -326,6 +329,13 @@ private fun TestModeAdvancedSettings(
 
             Divider()
 
+            SyntheticLocationFixture(
+                config = config,
+                onConfigChange = onConfigChange
+            )
+
+            Divider()
+
             // Show banner toggle
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -347,6 +357,89 @@ private fun TestModeAdvancedSettings(
                     }
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SyntheticLocationFixture(
+    config: TestModeConfig,
+    onConfigChange: (TestModeConfig) -> Unit
+) {
+    var latitudeText by rememberSaveable { mutableStateOf("") }
+    var longitudeText by rememberSaveable { mutableStateOf("") }
+
+    LaunchedEffect(config.syntheticLatitude, config.syntheticLongitude) {
+        latitudeText = config.syntheticLatitude?.toString().orEmpty()
+        longitudeText = config.syntheticLongitude?.toString().orEmpty()
+    }
+
+    val candidate = SyntheticLocationPolicy.validated(
+        latitudeText.trim().toDoubleOrNull(),
+        longitudeText.trim().toDoubleOrNull()
+    )
+    val hasPersistedFixture = config.syntheticLatitude != null && config.syntheticLongitude != null
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Synthetic Test Location", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Explicit QA fixture only. These coordinates are never copied from live device GPS.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedTextField(
+            value = latitudeText,
+            onValueChange = { latitudeText = it },
+            label = { Text("Synthetic latitude") },
+            supportingText = { Text("-90 to 90") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = longitudeText,
+            onValueChange = { longitudeText = it },
+            label = { Text("Synthetic longitude") },
+            supportingText = { Text("-180 to 180") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        if ((latitudeText.isNotBlank() || longitudeText.isNotBlank()) && candidate == null) {
+            Text(
+                "Enter one valid latitude/longitude pair. Partial or out-of-range fixtures are rejected.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = candidate != null,
+                onClick = {
+                    candidate ?: return@Button
+                    onConfigChange(
+                        config.copy(
+                            syntheticLatitude = candidate.latitude,
+                            syntheticLongitude = candidate.longitude
+                        )
+                    )
+                }
+            ) {
+                Text("Apply Synthetic Location")
+            }
+            TextButton(
+                enabled = hasPersistedFixture,
+                onClick = {
+                    onConfigChange(config.copy(syntheticLatitude = null, syntheticLongitude = null))
+                }
+            ) {
+                Text("Clear")
+            }
+        }
+        if (hasPersistedFixture) {
+            Text(
+                "Active fixture: ${config.syntheticLatitude}, ${config.syntheticLongitude}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.secondary
+            )
         }
     }
 }

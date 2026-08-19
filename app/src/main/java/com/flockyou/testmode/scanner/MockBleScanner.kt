@@ -197,6 +197,8 @@ class MockBleScanner : IBluetoothScanner {
         Log.d(TAG, "RSSI variation enabled: $enabled")
     }
 
+    internal fun isRssiVariationEnabled(): Boolean = enableRssiVariation
+
     /**
      * Get the current list of mock devices.
      */
