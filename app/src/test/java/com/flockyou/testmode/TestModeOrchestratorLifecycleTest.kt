@@ -12,6 +12,9 @@ import com.flockyou.data.repository.DetectionRepository
 import com.flockyou.testmode.scanner.MockBleDevice
 import com.flockyou.testmode.scanner.MockBleScanResult
 import com.flockyou.testmode.scanner.MockBleScanner
+import com.flockyou.testmode.scanner.MockWifiScanner
+import com.flockyou.testmode.scanner.MockCellularScanner
+import com.flockyou.testmode.scanner.MockAudioScanner
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.coEvery
@@ -26,6 +29,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 
 class TestModeOrchestratorLifecycleTest {
     private var orchestrator: TestModeOrchestrator? = null
@@ -264,9 +268,45 @@ class TestModeOrchestratorLifecycleTest {
         assertEquals(SignalStrength.UNKNOWN, detection.captured.signalStrength)
     }
 
+
+    @Test
+    fun `signal variation switch configures every applicable mock sensor`() {
+        val subject = TestModeOrchestrator(
+            context = mockk<Context>(relaxed = true),
+            scenarioProvider = TestScenarioProvider(),
+            detectionRepository = mockk(relaxed = true)
+        )
+        orchestrator = subject
+
+        subject.updateConfig(TestModeConfig(simulateSignalVariation = false))
+
+        assertFalse(subject.privateWifiScanner().isSignalVariationEnabled())
+        assertFalse(subject.privateBleScanner().isRssiVariationEnabled())
+        assertFalse(subject.privateCellularScanner().isSignalVariationEnabled())
+        assertFalse(subject.privateAudioScanner().isAmplitudeVariationEnabled())
+    }
+
     private fun TestModeOrchestrator.privateBleScanner(): MockBleScanner {
         val field = TestModeOrchestrator::class.java.getDeclaredField("mockBleScanner")
         field.isAccessible = true
         return field.get(this) as MockBleScanner
     }
+    private fun TestModeOrchestrator.privateWifiScanner(): MockWifiScanner {
+        val field = TestModeOrchestrator::class.java.getDeclaredField("mockWifiScanner")
+        field.isAccessible = true
+        return field.get(this) as MockWifiScanner
+    }
+
+    private fun TestModeOrchestrator.privateCellularScanner(): MockCellularScanner {
+        val field = TestModeOrchestrator::class.java.getDeclaredField("mockCellularScanner")
+        field.isAccessible = true
+        return field.get(this) as MockCellularScanner
+    }
+
+    private fun TestModeOrchestrator.privateAudioScanner(): MockAudioScanner {
+        val field = TestModeOrchestrator::class.java.getDeclaredField("mockAudioScanner")
+        field.isAccessible = true
+        return field.get(this) as MockAudioScanner
+    }
+
 }
