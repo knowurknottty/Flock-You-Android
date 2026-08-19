@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.flockyou.config.NetworkConfig
 import com.flockyou.data.model.*
 import com.flockyou.service.ScanningService
@@ -45,30 +46,8 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.util.MapTileIndex
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.Polygon
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.math.cos
-import kotlin.math.sqrt
-
-// Cluster radius in degrees (approximately 100m at equator)
-private const val CLUSTER_RADIUS_DEGREES = 0.001
-
-/**
- * Represents a cluster of detections on the map
- */
-private data class DetectionCluster(
-    val center: GeoPoint,
-    val detections: List<Detection>,
-    val highestThreatLevel: ThreatLevel
-)
-
-/**
- * GPS status for the indicator
- */
-private enum class GpsStatus {
-    ACTIVE, SEARCHING, DISABLED
-}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -78,17 +57,18 @@ fun MapScreen(
     onNavigateToDetectionDetail: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsState()
-    val filteredDetections by viewModel.detectionsWithLocation.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val filteredDetections by viewModel.detectionsWithLocation.collectAsStateWithLifecycle()
+    val hasAnyDetections by viewModel.hasAnyDetections.collectAsStateWithLifecycle()
+    val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     var selectedDetection by remember { mutableStateOf<Detection?>(null) }
-    var selectedCluster by remember { mutableStateOf<DetectionCluster?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
-    var currentZoom by remember { mutableStateOf(4.0) }
+    var zoomBucket by remember { mutableStateOf(MapZoomBucket.WORLD) }
+    var didAutoFit by remember { mutableStateOf(false) }
     var showFilterSheet by remember { mutableStateOf(false) }
 
     // GPS status state
-    var gpsStatus by remember { mutableStateOf(GpsStatus.SEARCHING) }
-    var gpsAccuracyMeters by remember { mutableStateOf<Float?>(null) }
+    var gpsStatus by remember { mutableStateOf(MapGpsStatus.SEARCHING) }
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
 
     // Location permission launcher for requesting location permissions
@@ -121,32 +101,17 @@ fun MapScreen(
         }
     }
 
-    // Update GPS status based on detections with location
-    LaunchedEffect(filteredDetections) {
-        val hasLocationData = filteredDetections.any {
-            it.latitude != null && it.longitude != null
-        }
-        gpsStatus = when {
-            hasLocationData -> GpsStatus.ACTIVE
-            filteredDetections.isEmpty() -> GpsStatus.SEARCHING
-            else -> GpsStatus.DISABLED
-        }
-
-        // Get user location from most recent detection
-        filteredDetections
-            .filter { it.latitude != null && it.longitude != null }
+    // This map has stored detection coordinates, not an Android Location accuracy fix.
+    // Never infer GPS +/- meters from the surveillance device RSSI/signal-strength field.
+    LaunchedEffect(filteredDetections, hasAnyDetections, isScanning) {
+        gpsStatus = MapPresentationPolicy.gpsStatus(
+            hasLocatedDetections = filteredDetections.isNotEmpty(),
+            hasAnyDetections = hasAnyDetections,
+            isScanning = isScanning
+        )
+        userLocation = filteredDetections
             .maxByOrNull { it.timestamp }
-            ?.let { latest ->
-                userLocation = GeoPoint(latest.latitude!!, latest.longitude!!)
-                // Estimate accuracy based on signal strength (rough approximation)
-                gpsAccuracyMeters = when (latest.signalStrength) {
-                    SignalStrength.EXCELLENT -> 10f
-                    SignalStrength.GOOD -> 25f
-                    SignalStrength.MEDIUM -> 50f
-                    SignalStrength.WEAK -> 100f
-                    else -> 150f
-                }
-            }
+            ?.let { latest -> GeoPoint(latest.latitude!!, latest.longitude!!) }
     }
     
     // Initialize osmdroid configuration
@@ -159,14 +124,13 @@ fun MapScreen(
     }
     
     // Update markers when detections change - with clustering support
-    LaunchedEffect(filteredDetections, mapView, currentZoom) {
+    LaunchedEffect(filteredDetections, mapView, zoomBucket) {
         mapView?.let { map ->
             // Clear existing markers and overlays
-            map.overlays.removeAll { it is Marker || it is Polygon }
+            map.overlays.removeAll { it is Marker }
 
-            val detectionsWithCoords = filteredDetections.filter {
-                it.latitude != null && it.longitude != null
-            }
+            // DetectionRepository.detectionsWithLocation already guarantees coordinates.
+            val detectionsWithCoords = filteredDetections
 
             if (detectionsWithCoords.isEmpty()) {
                 map.invalidate()
@@ -175,21 +139,20 @@ fun MapScreen(
 
             val points = mutableListOf<GeoPoint>()
 
-            // Determine if we should cluster based on zoom level
-            val shouldCluster = currentZoom < 15.0
-
-            if (shouldCluster) {
-                // Create clusters
-                val clusters = clusterDetections(detectionsWithCoords)
+            if (zoomBucket != MapZoomBucket.DETAIL) {
+                // Cluster on coarse zoom tiers. The policy uses bounded grid bucketing rather than
+                // comparing every detection with every other detection.
+                val clusters = MapPresentationPolicy.clusterDetections(detectionsWithCoords, zoomBucket)
 
                 clusters.forEach { cluster ->
-                    points.add(cluster.center)
+                    val clusterCenter = GeoPoint(cluster.centerLatitude, cluster.centerLongitude)
+                    points.add(clusterCenter)
 
                     if (cluster.detections.size == 1) {
                         // Single detection - show normal marker
                         val detection = cluster.detections.first()
                         val marker = Marker(map).apply {
-                            position = cluster.center
+                            position = clusterCenter
                             title = detection.deviceType.name.replace("_", " ")
                             snippet = detection.macAddress ?: detection.ssid ?: "Unknown"
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
@@ -204,7 +167,7 @@ fun MapScreen(
                     } else {
                         // Multiple detections - show cluster marker
                         val marker = Marker(map).apply {
-                            position = cluster.center
+                            position = clusterCenter
                             title = "${cluster.detections.size} detections"
                             snippet = "Tap to zoom in"
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
@@ -247,16 +210,9 @@ fun MapScreen(
                 }
             }
 
-            // Add GPS accuracy circle if user location is available
-            userLocation?.let { location ->
-                gpsAccuracyMeters?.let { accuracy ->
-                    val accuracyCircle = createAccuracyCircle(location, accuracy.toDouble())
-                    map.overlays.add(0, accuracyCircle) // Add at bottom so markers are on top
-                }
-            }
-
             // Auto-zoom to fit all markers on first load
-            if (points.isNotEmpty() && currentZoom == 4.0) {
+            if (points.isNotEmpty() && !didAutoFit) {
+                didAutoFit = true
                 zoomToFitPoints(map, points)
             }
 
@@ -264,20 +220,24 @@ fun MapScreen(
         }
     }
 
-    // Track zoom level changes
-    LaunchedEffect(mapView) {
-        mapView?.let { map ->
-            map.addMapListener(object : org.osmdroid.events.MapListener {
-                override fun onScroll(event: org.osmdroid.events.ScrollEvent?): Boolean {
-                    currentZoom = map.zoomLevelDouble
-                    return false
-                }
+    // Track only meaningful zoom-tier changes and remove the listener when the MapView changes.
+    // Assigning the same enum value is a no-op, so fractional zoom updates inside one tier no longer
+    // invalidate and rebuild the complete marker overlay.
+    DisposableEffect(mapView) {
+        val map = mapView
+        if (map == null) {
+            onDispose { }
+        } else {
+            val listener = object : org.osmdroid.events.MapListener {
+                override fun onScroll(event: org.osmdroid.events.ScrollEvent?): Boolean = false
 
                 override fun onZoom(event: org.osmdroid.events.ZoomEvent?): Boolean {
-                    currentZoom = map.zoomLevelDouble
+                    zoomBucket = MapZoomBucket.forZoom(map.zoomLevelDouble)
                     return false
                 }
-            })
+            }
+            map.addMapListener(listener)
+            onDispose { map.removeMapListener(listener) }
         }
     }
     
@@ -301,7 +261,6 @@ fun MapScreen(
                     IconButton(onClick = {
                         mapView?.let { map ->
                             val points = filteredDetections
-                                .filter { it.latitude != null && it.longitude != null }
                                 .map { GeoPoint(it.latitude!!, it.longitude!!) }
 
                             if (points.isNotEmpty()) {
@@ -323,7 +282,6 @@ fun MapScreen(
                     IconButton(onClick = {
                         mapView?.let { map ->
                             val latest = filteredDetections
-                                .filter { it.latitude != null && it.longitude != null }
                                 .maxByOrNull { it.timestamp }
 
                             if (latest != null) {
@@ -346,22 +304,13 @@ fun MapScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Check if we have location data
-            val hasLocationData = filteredDetections.any {
-                it.latitude != null && it.longitude != null
-            }
+            val hasLocationData = filteredDetections.isNotEmpty()
 
-            if (!hasLocationData && filteredDetections.isNotEmpty()) {
-                // Empty state - detections exist but no location data
+            if (!hasLocationData) {
                 MapEmptyState(
-                    hasDetections = true,
-                    onRequestPermissions = requestLocationPermissions
-                )
-            } else if (filteredDetections.isEmpty()) {
-                // Empty state - no detections at all
-                MapEmptyState(
-                    hasDetections = false,
-                    onRequestPermissions = startScanning
+                    hasDetections = hasAnyDetections,
+                    isScanning = isScanning,
+                    onRequestPermissions = if (hasAnyDetections) requestLocationPermissions else startScanning
                 )
             } else {
                 // OpenStreetMap View with HTTPS tile source
@@ -389,7 +338,7 @@ fun MapScreen(
             // GPS Status Indicator (top-start corner)
             GpsStatusIndicator(
                 status = gpsStatus,
-                accuracyMeters = gpsAccuracyMeters,
+                accuracyMeters = null,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(16.dp)
@@ -413,7 +362,7 @@ fun MapScreen(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "${filteredDetections.filter { it.latitude != null }.size} locations",
+                        text = "${filteredDetections.size} locations",
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
@@ -534,107 +483,6 @@ private fun zoomToFitPoints(map: MapView, points: List<GeoPoint>, minZoom: Doubl
             }
         }
     }
-}
-
-/**
- * Cluster detections that are within close proximity
- */
-private fun clusterDetections(detections: List<Detection>): List<DetectionCluster> {
-    if (detections.isEmpty()) return emptyList()
-
-    val clusters = mutableListOf<DetectionCluster>()
-    val assigned = mutableSetOf<String>()
-
-    for (detection in detections) {
-        if (detection.id in assigned) continue
-        if (detection.latitude == null || detection.longitude == null) continue
-
-        // Find all nearby detections
-        val nearby = mutableListOf(detection)
-        for (other in detections) {
-            if (other.id in assigned || other.id == detection.id) continue
-            if (other.latitude == null || other.longitude == null) continue
-
-            val distance = calculateDistance(
-                detection.latitude, detection.longitude,
-                other.latitude, other.longitude
-            )
-
-            if (distance < CLUSTER_RADIUS_DEGREES) {
-                nearby.add(other)
-            }
-        }
-
-        // Mark all as assigned
-        nearby.forEach { assigned.add(it.id) }
-
-        // Calculate cluster center
-        val centerLat = nearby.map { it.latitude!! }.average()
-        val centerLon = nearby.map { it.longitude!! }.average()
-
-        // Find highest threat level
-        val highestThreat = nearby.maxByOrNull { threatLevelOrdinal(it.threatLevel) }?.threatLevel
-            ?: ThreatLevel.INFO
-
-        clusters.add(
-            DetectionCluster(
-                center = GeoPoint(centerLat, centerLon),
-                detections = nearby,
-                highestThreatLevel = highestThreat
-            )
-        )
-    }
-
-    return clusters
-}
-
-/**
- * Get ordinal value for threat level comparison
- */
-private fun threatLevelOrdinal(level: ThreatLevel): Int = when (level) {
-    ThreatLevel.CRITICAL -> 4
-    ThreatLevel.HIGH -> 3
-    ThreatLevel.MEDIUM -> 2
-    ThreatLevel.LOW -> 1
-    ThreatLevel.INFO -> 0
-}
-
-/**
- * Calculate simple distance between two points (in degrees)
- */
-private fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-    val dLat = lat2 - lat1
-    val dLon = lon2 - lon1
-    return sqrt(dLat * dLat + dLon * dLon)
-}
-
-/**
- * Create GPS accuracy circle overlay
- */
-private fun createAccuracyCircle(center: GeoPoint, radiusMeters: Double): Polygon {
-    val circle = Polygon()
-    val points = mutableListOf<GeoPoint>()
-
-    // Convert meters to degrees (rough approximation)
-    // 1 degree latitude ~ 111km
-    // 1 degree longitude ~ 111km * cos(latitude)
-    val radiusLatDegrees = radiusMeters / 111000.0
-    val radiusLonDegrees = radiusMeters / (111000.0 * cos(Math.toRadians(center.latitude)))
-
-    // Create circle points
-    for (i in 0..36) {
-        val angle = Math.toRadians(i * 10.0)
-        val lat = center.latitude + radiusLatDegrees * kotlin.math.sin(angle)
-        val lon = center.longitude + radiusLonDegrees * kotlin.math.cos(angle)
-        points.add(GeoPoint(lat, lon))
-    }
-
-    circle.points = points
-    circle.fillPaint.color = Color.argb(50, 33, 150, 243) // Semi-transparent blue
-    circle.outlinePaint.color = Color.argb(150, 33, 150, 243) // Blue outline
-    circle.outlinePaint.strokeWidth = 3f
-
-    return circle
 }
 
 private fun createMarkerDrawable(threatLevel: ThreatLevel): android.graphics.drawable.Drawable {
@@ -1007,22 +855,27 @@ private fun MapDetectionSheet(
  */
 @Composable
 private fun GpsStatusIndicator(
-    status: GpsStatus,
+    status: MapGpsStatus,
     accuracyMeters: Float?,
     modifier: Modifier = Modifier
 ) {
     val (statusColor, statusIcon, statusText) = when (status) {
-        GpsStatus.ACTIVE -> Triple(
+        MapGpsStatus.ACTIVE -> Triple(
             StatusActive,
             Icons.Default.GpsFixed,
             "GPS Active"
         )
-        GpsStatus.SEARCHING -> Triple(
+        MapGpsStatus.SEARCHING -> Triple(
             StatusWarning,
             Icons.Default.GpsNotFixed,
             "Searching..."
         )
-        GpsStatus.DISABLED -> Triple(
+        MapGpsStatus.IDLE -> Triple(
+            StatusInactive,
+            Icons.Default.GpsNotFixed,
+            "Idle"
+        )
+        MapGpsStatus.DISABLED -> Triple(
             StatusError,
             Icons.Default.GpsOff,
             "Disabled"
@@ -1060,7 +913,7 @@ private fun GpsStatusIndicator(
                     fontWeight = FontWeight.Medium,
                     color = statusColor
                 )
-                if (status == GpsStatus.ACTIVE && accuracyMeters != null) {
+                if (status == MapGpsStatus.ACTIVE && accuracyMeters != null) {
                     Text(
                         text = "+/- ${accuracyMeters.toInt()}m",
                         style = MaterialTheme.typography.labelSmall,
@@ -1079,9 +932,14 @@ private fun GpsStatusIndicator(
 @Composable
 private fun MapEmptyState(
     hasDetections: Boolean,
+    isScanning: Boolean,
     onRequestPermissions: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val presentation = MapPresentationPolicy.emptyStatePresentation(
+        hasDetections = hasDetections,
+        isScanning = isScanning
+    )
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -1105,10 +963,7 @@ private fun MapEmptyState(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = if (hasDetections)
-                        "No Location Data"
-                    else
-                        "No Detections Yet",
+                    text = presentation.title,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
@@ -1116,10 +971,7 @@ private fun MapEmptyState(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = if (hasDetections)
-                        "Detections were found but none have location data. Enable GPS permission to see detections on the map."
-                    else
-                        "Start scanning to detect surveillance devices. They will appear on the map when found.",
+                    text = presentation.body,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp)
@@ -1128,7 +980,8 @@ private fun MapEmptyState(
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Button(
-                    onClick = onRequestPermissions
+                    onClick = onRequestPermissions,
+                    enabled = presentation.actionEnabled
                 ) {
                     Icon(
                         imageVector = if (hasDetections) Icons.Default.LocationOn else Icons.Default.PlayArrow,
@@ -1136,12 +989,7 @@ private fun MapEmptyState(
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (hasDetections)
-                            "Enable Location"
-                        else
-                            "Start Scanning"
-                    )
+                    Text(text = presentation.actionLabel)
                 }
             }
         }

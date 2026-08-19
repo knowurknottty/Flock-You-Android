@@ -28,6 +28,7 @@ import com.flockyou.R
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.flockyou.config.NetworkConfig
 import com.flockyou.data.NetworkSettings
 import com.flockyou.data.OuiSettings
@@ -64,13 +65,13 @@ fun SettingsScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val viewModel: MainViewModel = hiltViewModel()
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     // Use IPC-based data from uiState instead of direct companion object access
     val scanStats = uiState.scanStats
-    val ouiSettings by viewModel.ouiSettings.collectAsState()
-    val isOuiUpdating by viewModel.isOuiUpdating.collectAsState()
+    val ouiSettings by viewModel.ouiSettings.collectAsStateWithLifecycle()
+    val isOuiUpdating by viewModel.isOuiUpdating.collectAsStateWithLifecycle()
     // Detection settings - persisted via DataStore
-    val detectionSettings by viewModel.detectionSettings.collectAsState()
+    val detectionSettings by viewModel.detectionSettings.collectAsStateWithLifecycle()
     var showScanSettings by remember { mutableStateOf(false) }
     var batteryOptimizationIgnored by remember {
         mutableStateOf(isBatteryOptimizationIgnored(context))

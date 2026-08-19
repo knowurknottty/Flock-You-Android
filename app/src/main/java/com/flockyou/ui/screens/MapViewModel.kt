@@ -8,15 +8,14 @@ import com.flockyou.data.model.DeviceType
 import com.flockyou.data.model.SignalStrength
 import com.flockyou.data.model.ThreatLevel
 import com.flockyou.data.repository.DetectionRepository
+import com.flockyou.service.ScanningServiceConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class MapUiState(
-    val allDetectionsWithLocation: List<Detection> = emptyList(),
     val showHeatmap: Boolean = false,
-    // Filter state (same as MainUiState)
+    // Filter state (same semantics as MainUiState)
     val filterThreatLevel: ThreatLevel? = null,
     val filterDeviceTypes: Set<DeviceType> = emptySet(),
     val filterMatchAll: Boolean = true,
@@ -30,94 +29,58 @@ data class MapUiState(
 
 @HiltViewModel
 class MapViewModel @Inject constructor(
-    private val repository: DetectionRepository
+    private val repository: DetectionRepository,
+    private val serviceConnection: ScanningServiceConnection
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MapUiState())
     val uiState: StateFlow<MapUiState> = _uiState.asStateFlow()
 
-    /**
-     * Flow of filtered detections with location
-     */
-    val detectionsWithLocation: StateFlow<List<Detection>> = _uiState
-        .map { state -> getFilteredDetections(state) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
+    /** Cross-process scanning truth mirrored from the singleton IPC connection. */
+    val isScanning: StateFlow<Boolean> = serviceConnection.isScanning
 
     init {
-        viewModelScope.launch {
-            repository.detectionsWithLocation.collect { detections ->
-                _uiState.update { it.copy(allDetectionsWithLocation = detections) }
-            }
-        }
+        // AppModule auto-binds the singleton connection; ask for an immediate authoritative sync.
+        serviceConnection.requestState()
     }
 
-    private fun getFilteredDetections(state: MapUiState): List<Detection> {
-        return state.allDetectionsWithLocation.filter { detection ->
-            // 1. Threat Level filter
-            val threatPass = state.filterThreatLevel?.let { detection.threatLevel == it } ?: true
+    val hasAnyDetections: StateFlow<Boolean> = repository.totalDetectionCount
+        .map { it > 0 }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = false
+        )
 
-            // 2. Device Type filter
-            val typePass = if (state.filterDeviceTypes.isEmpty()) {
-                true
-            } else {
-                detection.deviceType in state.filterDeviceTypes
-            }
-
-            // 3. Protocol filter
-            val protocolPass = if (state.filterProtocols.isEmpty()) {
-                true
-            } else {
-                detection.protocol in state.filterProtocols
-            }
-
-            // 4. Time Range filter
-            val timePass = when (state.filterTimeRange) {
-                TimeRange.ALL_TIME -> true
-                TimeRange.CUSTOM -> {
-                    val start = state.filterCustomStartTime ?: 0L
-                    val end = state.filterCustomEndTime ?: Long.MAX_VALUE
-                    detection.timestamp in start..end
-                }
-                else -> {
-                    val cutoff = System.currentTimeMillis() - (state.filterTimeRange.durationMs ?: 0L)
-                    detection.timestamp >= cutoff
-                }
-            }
-
-            // 5. Signal Strength filter
-            val signalPass = if (state.filterSignalStrength.isEmpty()) {
-                true
-            } else {
-                detection.signalStrength in state.filterSignalStrength
-            }
-
-            // 6. Active Only filter
-            val activePass = !state.filterActiveOnly || detection.isActive
-
-            // Combine threat+type with AND/OR logic
-            val threatTypePass = if (state.filterMatchAll) {
-                threatPass && typePass
-            } else {
-                if (state.filterThreatLevel != null && state.filterDeviceTypes.isNotEmpty()) {
-                    threatPass || typePass
-                } else {
-                    threatPass && typePass
-                }
-            }
-
-            threatTypePass && protocolPass && timePass && signalPass && activePass
-        }
+    /**
+     * Filtered geolocated detections for the map.
+     *
+     * The repository already guarantees latitude/longitude are non-null for this stream. Keep the
+     * full detection list out of MapUiState so database emissions do not copy a potentially large
+     * history into filter/control state before being mapped again.
+     */
+    val detectionsWithLocation: StateFlow<List<Detection>> = combine(
+        repository.detectionsWithLocation,
+        _uiState
+    ) { detections, state ->
+        MapPresentationPolicy.filterDetections(
+            detections = detections,
+            state = state,
+            nowMillis = System.currentTimeMillis()
+        )
     }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList()
+        )
 
     fun toggleHeatmap() {
         _uiState.update { it.copy(showHeatmap = !it.showHeatmap) }
     }
 
-    // Filter setter methods
     fun setThreatFilter(threatLevel: ThreatLevel?) {
         _uiState.update { it.copy(filterThreatLevel = threatLevel) }
     }

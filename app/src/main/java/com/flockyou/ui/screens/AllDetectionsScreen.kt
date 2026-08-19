@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.flockyou.data.*
 import com.flockyou.data.model.DetectionPatterns
 import com.flockyou.data.model.DeviceType
@@ -46,7 +47,7 @@ fun AllDetectionsScreen(
     viewModel: RuleSettingsViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit
 ) {
-    val settings by viewModel.settings.collectAsState()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(0) }
     var showAddRuleSheet by remember { mutableStateOf(false) }
     var showAddHeuristicSheet by remember { mutableStateOf(false) }
