@@ -33,6 +33,13 @@ data class MapDetectionCluster(
     val highestThreatLevel: ThreatLevel
 )
 
+data class MapEmptyStatePresentation(
+    val title: String,
+    val body: String,
+    val actionLabel: String,
+    val actionEnabled: Boolean
+)
+
 /**
  * Pure presentation policy shared by MapViewModel and MapScreen.
  *
@@ -41,6 +48,31 @@ data class MapDetectionCluster(
  * pairwise scan, dense histories do not compare every detection with every other detection.
  */
 object MapPresentationPolicy {
+
+    fun emptyStatePresentation(
+        hasDetections: Boolean,
+        isScanning: Boolean
+    ): MapEmptyStatePresentation {
+        // Initial extraction intentionally preserves the current behavior.
+        // The scanning-state truthfulness regression is pinned separately before changing it.
+        @Suppress("UNUSED_VARIABLE")
+        val scanningState = isScanning
+        return if (hasDetections) {
+            MapEmptyStatePresentation(
+                title = "No Location Data",
+                body = "Detections were found but none have location data. Enable GPS permission to see detections on the map.",
+                actionLabel = "Enable Location",
+                actionEnabled = true
+            )
+        } else {
+            MapEmptyStatePresentation(
+                title = "No Detections Yet",
+                body = "Start scanning to detect surveillance devices. They will appear on the map when found.",
+                actionLabel = "Start Scanning",
+                actionEnabled = true
+            )
+        }
+    }
 
     fun filterDetections(
         detections: List<Detection>,

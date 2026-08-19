@@ -935,6 +935,10 @@ private fun MapEmptyState(
     onRequestPermissions: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val presentation = MapPresentationPolicy.emptyStatePresentation(
+        hasDetections = hasDetections,
+        isScanning = false
+    )
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -958,10 +962,7 @@ private fun MapEmptyState(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = if (hasDetections)
-                        "No Location Data"
-                    else
-                        "No Detections Yet",
+                    text = presentation.title,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
@@ -969,10 +970,7 @@ private fun MapEmptyState(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = if (hasDetections)
-                        "Detections were found but none have location data. Enable GPS permission to see detections on the map."
-                    else
-                        "Start scanning to detect surveillance devices. They will appear on the map when found.",
+                    text = presentation.body,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp)
@@ -981,7 +979,8 @@ private fun MapEmptyState(
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Button(
-                    onClick = onRequestPermissions
+                    onClick = onRequestPermissions,
+                    enabled = presentation.actionEnabled
                 ) {
                     Icon(
                         imageVector = if (hasDetections) Icons.Default.LocationOn else Icons.Default.PlayArrow,
@@ -989,12 +988,7 @@ private fun MapEmptyState(
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (hasDetections)
-                            "Enable Location"
-                        else
-                            "Start Scanning"
-                    )
+                    Text(text = presentation.actionLabel)
                 }
             }
         }
