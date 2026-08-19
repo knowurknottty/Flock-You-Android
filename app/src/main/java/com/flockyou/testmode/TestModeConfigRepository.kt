@@ -41,6 +41,8 @@ class TestModeConfigRepository @Inject constructor(
         val EMISSION_INTERVAL = longPreferencesKey("emission_interval_ms")
         val SIMULATE_VARIATION = booleanPreferencesKey("simulate_signal_variation")
         val SHOW_BANNER = booleanPreferencesKey("show_test_mode_banner")
+        val SYNTHETIC_LATITUDE = doublePreferencesKey("synthetic_latitude")
+        val SYNTHETIC_LONGITUDE = doublePreferencesKey("synthetic_longitude")
     }
 
     /**
@@ -48,14 +50,16 @@ class TestModeConfigRepository @Inject constructor(
      * Emits updates whenever any configuration value changes.
      */
     val config: Flow<TestModeConfig> = context.testModeDataStore.data.map { prefs ->
-        TestModeConfig(
+        PersistedTestModeConfig(
             enabled = prefs[Keys.ENABLED] ?: false,
             activeScenarioId = prefs[Keys.ACTIVE_SCENARIO_ID],
             autoAdvanceScenario = prefs[Keys.AUTO_ADVANCE] ?: true,
             dataEmissionIntervalMs = prefs[Keys.EMISSION_INTERVAL] ?: TestModeConfig.DEFAULT_EMISSION_INTERVAL_MS,
             simulateSignalVariation = prefs[Keys.SIMULATE_VARIATION] ?: true,
-            showTestModeBanner = prefs[Keys.SHOW_BANNER] ?: true
-        )
+            showTestModeBanner = prefs[Keys.SHOW_BANNER] ?: true,
+            syntheticLatitude = prefs[Keys.SYNTHETIC_LATITUDE],
+            syntheticLongitude = prefs[Keys.SYNTHETIC_LONGITUDE]
+        ).toConfig()
     }
 
     /**
@@ -72,14 +76,19 @@ class TestModeConfigRepository @Inject constructor(
      * @param config The new configuration to persist
      */
     suspend fun updateConfig(config: TestModeConfig) {
+        val persisted = PersistedTestModeConfig.fromConfig(config)
         context.testModeDataStore.edit { prefs ->
-            prefs[Keys.ENABLED] = config.enabled
-            config.activeScenarioId?.let { prefs[Keys.ACTIVE_SCENARIO_ID] = it }
+            prefs[Keys.ENABLED] = persisted.enabled
+            persisted.activeScenarioId?.let { prefs[Keys.ACTIVE_SCENARIO_ID] = it }
                 ?: prefs.remove(Keys.ACTIVE_SCENARIO_ID)
-            prefs[Keys.AUTO_ADVANCE] = config.autoAdvanceScenario
-            prefs[Keys.EMISSION_INTERVAL] = config.dataEmissionIntervalMs
-            prefs[Keys.SIMULATE_VARIATION] = config.simulateSignalVariation
-            prefs[Keys.SHOW_BANNER] = config.showTestModeBanner
+            prefs[Keys.AUTO_ADVANCE] = persisted.autoAdvanceScenario
+            prefs[Keys.EMISSION_INTERVAL] = persisted.dataEmissionIntervalMs
+            prefs[Keys.SIMULATE_VARIATION] = persisted.simulateSignalVariation
+            prefs[Keys.SHOW_BANNER] = persisted.showTestModeBanner
+            persisted.syntheticLatitude?.let { prefs[Keys.SYNTHETIC_LATITUDE] = it }
+                ?: prefs.remove(Keys.SYNTHETIC_LATITUDE)
+            persisted.syntheticLongitude?.let { prefs[Keys.SYNTHETIC_LONGITUDE] = it }
+                ?: prefs.remove(Keys.SYNTHETIC_LONGITUDE)
         }
     }
 

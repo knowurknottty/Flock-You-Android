@@ -7,7 +7,9 @@ internal data class PersistedTestModeConfig(
     val autoAdvanceScenario: Boolean,
     val dataEmissionIntervalMs: Long,
     val simulateSignalVariation: Boolean,
-    val showTestModeBanner: Boolean
+    val showTestModeBanner: Boolean,
+    val syntheticLatitude: Double?,
+    val syntheticLongitude: Double?
 ) {
     fun toConfig(): TestModeConfig = TestModeConfig(
         enabled = enabled,
@@ -15,7 +17,9 @@ internal data class PersistedTestModeConfig(
         autoAdvanceScenario = autoAdvanceScenario,
         dataEmissionIntervalMs = dataEmissionIntervalMs,
         simulateSignalVariation = simulateSignalVariation,
-        showTestModeBanner = showTestModeBanner
+        showTestModeBanner = showTestModeBanner,
+        syntheticLatitude = syntheticLatitude,
+        syntheticLongitude = syntheticLongitude
     )
 
     companion object {
@@ -25,7 +29,9 @@ internal data class PersistedTestModeConfig(
             autoAdvanceScenario = config.autoAdvanceScenario,
             dataEmissionIntervalMs = config.dataEmissionIntervalMs,
             simulateSignalVariation = config.simulateSignalVariation,
-            showTestModeBanner = config.showTestModeBanner
+            showTestModeBanner = config.showTestModeBanner,
+            syntheticLatitude = config.syntheticLatitude,
+            syntheticLongitude = config.syntheticLongitude
         )
     }
 }
