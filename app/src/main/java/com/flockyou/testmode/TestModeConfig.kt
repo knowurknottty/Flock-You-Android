@@ -17,9 +17,6 @@ data class TestModeConfig(
     /** ID of the currently active test scenario (null = no scenario active) */
     val activeScenarioId: String? = null,
 
-    /** Automatically advance through scenario stages */
-    val autoAdvanceScenario: Boolean = true,
-
     /** How often to emit mock detection data (milliseconds) */
     val dataEmissionIntervalMs: Long = 3000L,
 

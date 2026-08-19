@@ -37,7 +37,6 @@ class TestModeConfigRepository @Inject constructor(
     private object Keys {
         val ENABLED = booleanPreferencesKey("test_mode_enabled")
         val ACTIVE_SCENARIO_ID = stringPreferencesKey("active_scenario_id")
-        val AUTO_ADVANCE = booleanPreferencesKey("auto_advance")
         val EMISSION_INTERVAL = longPreferencesKey("emission_interval_ms")
         val SIMULATE_VARIATION = booleanPreferencesKey("simulate_signal_variation")
         val SHOW_BANNER = booleanPreferencesKey("show_test_mode_banner")
@@ -52,7 +51,6 @@ class TestModeConfigRepository @Inject constructor(
     val config: Flow<TestModeConfig> = context.testModeDataStore.data.map { prefs ->
         PersistedTestModeConfig(
             enabled = prefs[Keys.ENABLED] ?: false,
-            autoAdvanceScenario = prefs[Keys.AUTO_ADVANCE] ?: true,
             dataEmissionIntervalMs = prefs[Keys.EMISSION_INTERVAL] ?: TestModeConfig.DEFAULT_EMISSION_INTERVAL_MS,
             simulateSignalVariation = prefs[Keys.SIMULATE_VARIATION] ?: true,
             showTestModeBanner = prefs[Keys.SHOW_BANNER] ?: true,
@@ -79,7 +77,6 @@ class TestModeConfigRepository @Inject constructor(
         context.testModeDataStore.edit { prefs ->
             prefs[Keys.ENABLED] = persisted.enabled
             prefs.remove(Keys.ACTIVE_SCENARIO_ID)
-            prefs[Keys.AUTO_ADVANCE] = persisted.autoAdvanceScenario
             prefs[Keys.EMISSION_INTERVAL] = persisted.dataEmissionIntervalMs
             prefs[Keys.SIMULATE_VARIATION] = persisted.simulateSignalVariation
             prefs[Keys.SHOW_BANNER] = persisted.showTestModeBanner
@@ -110,17 +107,6 @@ class TestModeConfigRepository @Inject constructor(
         context.testModeDataStore.edit { prefs ->
             scenarioId?.let { prefs[Keys.ACTIVE_SCENARIO_ID] = it }
                 ?: prefs.remove(Keys.ACTIVE_SCENARIO_ID)
-        }
-    }
-
-    /**
-     * Update the auto-advance setting.
-     *
-     * @param autoAdvance Whether scenarios should auto-advance through stages
-     */
-    suspend fun setAutoAdvance(autoAdvance: Boolean) {
-        context.testModeDataStore.edit { prefs ->
-            prefs[Keys.AUTO_ADVANCE] = autoAdvance
         }
     }
 
