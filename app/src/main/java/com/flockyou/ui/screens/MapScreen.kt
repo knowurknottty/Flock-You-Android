@@ -49,13 +49,6 @@ import org.osmdroid.views.overlay.Marker
 import java.text.SimpleDateFormat
 import java.util.*
 
-/**
- * GPS status for the indicator
- */
-private enum class GpsStatus {
-    ACTIVE, SEARCHING, DISABLED
-}
-
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun MapScreen(
@@ -74,7 +67,7 @@ fun MapScreen(
     var showFilterSheet by remember { mutableStateOf(false) }
 
     // GPS status state
-    var gpsStatus by remember { mutableStateOf(GpsStatus.SEARCHING) }
+    var gpsStatus by remember { mutableStateOf(MapGpsStatus.SEARCHING) }
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
 
     // Location permission launcher for requesting location permissions
@@ -110,11 +103,11 @@ fun MapScreen(
     // This map has stored detection coordinates, not an Android Location accuracy fix.
     // Never infer GPS +/- meters from the surveillance device RSSI/signal-strength field.
     LaunchedEffect(filteredDetections, hasAnyDetections) {
-        gpsStatus = when {
-            filteredDetections.isNotEmpty() -> GpsStatus.ACTIVE
-            hasAnyDetections -> GpsStatus.DISABLED
-            else -> GpsStatus.SEARCHING
-        }
+        gpsStatus = MapPresentationPolicy.gpsStatus(
+            hasLocatedDetections = filteredDetections.isNotEmpty(),
+            hasAnyDetections = hasAnyDetections,
+            isScanning = false
+        )
         userLocation = filteredDetections
             .maxByOrNull { it.timestamp }
             ?.let { latest -> GeoPoint(latest.latitude!!, latest.longitude!!) }
@@ -860,22 +853,27 @@ private fun MapDetectionSheet(
  */
 @Composable
 private fun GpsStatusIndicator(
-    status: GpsStatus,
+    status: MapGpsStatus,
     accuracyMeters: Float?,
     modifier: Modifier = Modifier
 ) {
     val (statusColor, statusIcon, statusText) = when (status) {
-        GpsStatus.ACTIVE -> Triple(
+        MapGpsStatus.ACTIVE -> Triple(
             StatusActive,
             Icons.Default.GpsFixed,
             "GPS Active"
         )
-        GpsStatus.SEARCHING -> Triple(
+        MapGpsStatus.SEARCHING -> Triple(
             StatusWarning,
             Icons.Default.GpsNotFixed,
             "Searching..."
         )
-        GpsStatus.DISABLED -> Triple(
+        MapGpsStatus.IDLE -> Triple(
+            StatusInactive,
+            Icons.Default.GpsNotFixed,
+            "Idle"
+        )
+        MapGpsStatus.DISABLED -> Triple(
             StatusError,
             Icons.Default.GpsOff,
             "Disabled"
@@ -913,7 +911,7 @@ private fun GpsStatusIndicator(
                     fontWeight = FontWeight.Medium,
                     color = statusColor
                 )
-                if (status == GpsStatus.ACTIVE && accuracyMeters != null) {
+                if (status == MapGpsStatus.ACTIVE && accuracyMeters != null) {
                     Text(
                         text = "+/- ${accuracyMeters.toInt()}m",
                         style = MaterialTheme.typography.labelSmall,

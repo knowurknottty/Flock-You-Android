@@ -40,6 +40,10 @@ data class MapEmptyStatePresentation(
     val actionEnabled: Boolean
 )
 
+enum class MapGpsStatus {
+    ACTIVE, SEARCHING, IDLE, DISABLED
+}
+
 /**
  * Pure presentation policy shared by MapViewModel and MapScreen.
  *
@@ -48,6 +52,21 @@ data class MapEmptyStatePresentation(
  * pairwise scan, dense histories do not compare every detection with every other detection.
  */
 object MapPresentationPolicy {
+
+    fun gpsStatus(
+        hasLocatedDetections: Boolean,
+        hasAnyDetections: Boolean,
+        isScanning: Boolean
+    ): MapGpsStatus {
+        // Initial extraction intentionally preserves the current behavior.
+        @Suppress("UNUSED_VARIABLE")
+        val scanningState = isScanning
+        return when {
+            hasLocatedDetections -> MapGpsStatus.ACTIVE
+            hasAnyDetections -> MapGpsStatus.DISABLED
+            else -> MapGpsStatus.SEARCHING
+        }
+    }
 
     fun emptyStatePresentation(
         hasDetections: Boolean,
