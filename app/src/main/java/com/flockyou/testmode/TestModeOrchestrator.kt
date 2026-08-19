@@ -165,6 +165,9 @@ class TestModeOrchestrator @Inject constructor(
      */
     fun updateConfig(newConfig: TestModeConfig) {
         _config.value = newConfig
+        if (newConfig.syntheticLatitude != null && newConfig.syntheticLongitude != null) {
+            updateLocation(newConfig.syntheticLatitude, newConfig.syntheticLongitude)
+        }
         mockWifiScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
         mockBleScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
         mockCellularScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
