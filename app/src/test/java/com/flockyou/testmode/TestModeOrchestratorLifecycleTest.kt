@@ -2,6 +2,7 @@ package com.flockyou.testmode
 
 import android.content.Context
 import android.util.Log
+import com.flockyou.data.model.Detection
 import com.flockyou.data.repository.DetectionRepository
 import com.flockyou.testmode.scanner.MockBleDevice
 import com.flockyou.testmode.scanner.MockBleScanResult
@@ -12,12 +13,14 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import org.junit.Assert.assertEquals
 
 class TestModeOrchestratorLifecycleTest {
     private var orchestrator: TestModeOrchestrator? = null
@@ -75,6 +78,50 @@ class TestModeOrchestratorLifecycleTest {
         delay(150)
 
         coVerify(exactly = 1) { repository.upsertDetection(any()) }
+    }
+
+
+    @Test
+    fun `explicit synthetic location geo-tags scenario detections`() = runBlocking {
+        val repository = mockk<DetectionRepository>(relaxed = true)
+        coEvery { repository.upsertDetection(any()) } returns true
+        val subject = TestModeOrchestrator(
+            context = mockk<Context>(relaxed = true),
+            scenarioProvider = TestScenarioProvider(),
+            detectionRepository = repository
+        )
+        orchestrator = subject
+
+        subject.updateConfig(
+            TestModeConfig(
+                dataEmissionIntervalMs = 30_000L,
+                syntheticLatitude = 34.7304,
+                syntheticLongitude = -86.5861
+            )
+        )
+        subject.startScenario(TestScenario.TrackerFollowing.id)
+        delay(150)
+
+        val bleScanner = subject.privateBleScanner()
+        bleScanner.stop()
+        clearMocks(repository, answers = false, recordedCalls = true)
+
+        bleScanner.emitResult(
+            MockBleScanResult(
+                device = MockBleDevice(
+                    name = "geo-fixture",
+                    address = "AA:BB:CC:DD:EE:01",
+                    rssi = -58
+                ),
+                rssi = -58
+            )
+        )
+        delay(150)
+
+        val detection = slot<Detection>()
+        coVerify(exactly = 1) { repository.upsertDetection(capture(detection)) }
+        assertEquals(34.7304, detection.captured.latitude ?: Double.NaN, 0.0000001)
+        assertEquals(-86.5861, detection.captured.longitude ?: Double.NaN, 0.0000001)
     }
 
     private fun TestModeOrchestrator.privateBleScanner(): MockBleScanner {
