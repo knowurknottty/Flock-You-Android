@@ -30,6 +30,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 
 class TestModeOrchestratorLifecycleTest {
     private var orchestrator: TestModeOrchestrator? = null
@@ -48,6 +49,23 @@ class TestModeOrchestratorLifecycleTest {
     fun tearDown() {
         orchestrator?.destroy()
         unmockkStatic(Log::class)
+    }
+
+    @Test
+    fun `starting scenario marks runtime status active`() = runBlocking {
+        val subject = TestModeOrchestrator(
+            context = mockk<Context>(relaxed = true),
+            scenarioProvider = TestScenarioProvider(),
+            detectionRepository = mockk(relaxed = true)
+        )
+        orchestrator = subject
+
+        subject.startScenario(TestScenario.HighThreatEnvironment.id)
+        delay(150)
+
+        assertTrue(subject.status.value.isActive)
+        assertEquals(TestScenario.HighThreatEnvironment.id, subject.status.value.activeScenarioId)
+        assertEquals(TestScenario.HighThreatEnvironment.name, subject.status.value.activeScenarioName)
     }
 
     @Test
