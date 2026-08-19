@@ -189,6 +189,10 @@ class TestModeOrchestrator @Inject constructor(
         mockCellularScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
         mockGnssScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
         mockAudioScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
+        mockWifiScanner.setSignalVariationEnabled(newConfig.simulateSignalVariation)
+        mockBleScanner.setRssiVariationEnabled(newConfig.simulateSignalVariation)
+        mockCellularScanner.setSignalVariation(newConfig.simulateSignalVariation)
+        mockAudioScanner.setAmplitudeVariation(newConfig.simulateSignalVariation)
     }
 
     /**
