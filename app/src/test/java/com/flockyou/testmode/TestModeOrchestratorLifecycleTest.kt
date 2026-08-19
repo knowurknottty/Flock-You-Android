@@ -3,6 +3,11 @@ package com.flockyou.testmode
 import android.content.Context
 import android.util.Log
 import com.flockyou.data.model.Detection
+import com.flockyou.data.model.DetectionMethod
+import com.flockyou.data.model.DetectionProtocol
+import com.flockyou.data.model.DetectionSource
+import com.flockyou.data.model.DeviceType
+import com.flockyou.data.model.SignalStrength
 import com.flockyou.data.repository.DetectionRepository
 import com.flockyou.testmode.scanner.MockBleDevice
 import com.flockyou.testmode.scanner.MockBleScanResult
@@ -208,6 +213,55 @@ class TestModeOrchestratorLifecycleTest {
         coVerify(exactly = 1) { repository.upsertDetection(capture(detection)) }
         assertEquals(null, detection.captured.latitude)
         assertEquals(null, detection.captured.longitude)
+    }
+
+
+    @Test
+    fun `GNSS spoofing scenario emits a standard GNSS test detection`() = runBlocking {
+        val repository = mockk<DetectionRepository>(relaxed = true)
+        coEvery { repository.upsertDetection(any()) } returns true
+        val subject = TestModeOrchestrator(
+            context = mockk<Context>(relaxed = true),
+            scenarioProvider = TestScenarioProvider(),
+            detectionRepository = repository
+        )
+        orchestrator = subject
+
+        subject.updateConfig(TestModeConfig(dataEmissionIntervalMs = 30_000L))
+        subject.startScenario(TestScenario.GnssSpoofing.id)
+        delay(400)
+
+        val detection = slot<Detection>()
+        coVerify(exactly = 1) { repository.upsertDetection(capture(detection)) }
+        assertEquals(DetectionProtocol.GNSS, detection.captured.protocol)
+        assertEquals(DetectionMethod.GNSS_SPOOFING, detection.captured.detectionMethod)
+        assertEquals(DeviceType.GNSS_SPOOFER, detection.captured.deviceType)
+        assertEquals(DetectionSource.GNSS, detection.captured.detectionSource)
+        assertEquals(SignalStrength.UNKNOWN, detection.captured.signalStrength)
+    }
+
+    @Test
+    fun `ultrasonic scenario emits a standard audio test detection without fake RSSI`() = runBlocking {
+        val repository = mockk<DetectionRepository>(relaxed = true)
+        coEvery { repository.upsertDetection(any()) } returns true
+        val subject = TestModeOrchestrator(
+            context = mockk<Context>(relaxed = true),
+            scenarioProvider = TestScenarioProvider(),
+            detectionRepository = repository
+        )
+        orchestrator = subject
+
+        subject.updateConfig(TestModeConfig(dataEmissionIntervalMs = 30_000L))
+        subject.startScenario(TestScenario.UltrasonicBeacon.id)
+        delay(400)
+
+        val detection = slot<Detection>()
+        coVerify(exactly = 1) { repository.upsertDetection(capture(detection)) }
+        assertEquals(DetectionProtocol.AUDIO, detection.captured.protocol)
+        assertEquals(DetectionMethod.ULTRASONIC_AD_BEACON, detection.captured.detectionMethod)
+        assertEquals(DeviceType.ULTRASONIC_BEACON, detection.captured.deviceType)
+        assertEquals(DetectionSource.AUDIO, detection.captured.detectionSource)
+        assertEquals(SignalStrength.UNKNOWN, detection.captured.signalStrength)
     }
 
     private fun TestModeOrchestrator.privateBleScanner(): MockBleScanner {
