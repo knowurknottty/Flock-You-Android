@@ -54,6 +54,16 @@ class TestModeSettingsViewModel @Inject constructor(
      */
     val scenarios: List<TestScenario> = orchestrator.getAvailableScenarios()
 
+    init {
+        viewModelScope.launch {
+            configRepository.config.collect { persisted ->
+                if (orchestrator.config.value != persisted) {
+                    orchestrator.updateConfig(persisted)
+                }
+            }
+        }
+    }
+
     /**
      * Enable test mode without starting a specific scenario.
      */
