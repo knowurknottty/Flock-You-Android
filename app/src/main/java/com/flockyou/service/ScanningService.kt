@@ -34,6 +34,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import java.util.*
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -298,6 +299,9 @@ class ScanningService : Service() {
 
     // Vibration
     internal lateinit var vibrator: Vibrator
+
+    // Scan lifecycle admission is shared by service-main and IPC handler threads.
+    private val scanLifecycleGate = ScanLifecycleGate()
 
     // Scan job
     private var scanJob: Job? = null
@@ -786,8 +790,32 @@ class ScanningService : Service() {
 
     @SuppressLint("MissingPermission")
     private fun startScanning() {
-        if (isScanning.value) return
+        if (!scanLifecycleGate.tryBeginStart()) {
+            Log.d(TAG, "Start scanning ignored: lifecycle already starting or active")
+            return
+        }
 
+        try {
+            startScanningClaimed()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize scanning", e)
+            logError("Scanner", -1, "Failed to initialize scanning: ${e.message}", recoverable = true)
+            try {
+                stopScanning()
+            } catch (cleanupError: Exception) {
+                Log.e(TAG, "Failed to clean up partial scanner initialization", cleanupError)
+                isScanning.value = false
+                scanLifecycleGate.markStopped()
+            }
+            scanStatus.value = ScanStatus.Error(
+                message = e.message ?: "Scanner initialization failed",
+                recoverable = true
+            )
+            broadcastSubsystemStatus()
+        }
+    }
+
+    private fun startScanningClaimed() {
         scanStatus.value = ScanStatus.Starting
         Log.d(TAG, "Starting scanning")
 
@@ -1225,6 +1253,8 @@ class ScanningService : Service() {
         // Broadcast updated statuses to UI
         broadcastSubsystemStatus()
 
+        // Release start admission only after teardown is complete.
+        scanLifecycleGate.markStopped()
         Log.d(TAG, "Stopped scanning")
     }
 
@@ -1472,7 +1502,7 @@ class ScanningService : Service() {
             lastBleScanResultTime = System.currentTimeMillis()
             bleWatchdogFailures = 0
             // Update total BLE scan count
-            scanStats.value = scanStats.value.copy(totalBleScans = scanStats.value.totalBleScans + 1)
+            scanStats.update { stats -> stats.copy(totalBleScans = stats.totalBleScans + 1) }
             broadcastScanStats()
             // Update detector health status
             detectorCallbackImpl.onDetectorStarted(DetectorHealthStatus.DETECTOR_BLE)
@@ -1565,10 +1595,12 @@ class ScanningService : Service() {
         val advertisingRate = trackPacket(macAddress)
 
         // Update scan stats
-        scanStats.value = scanStats.value.copy(
-            bleDevicesSeen = scanStats.value.bleDevicesSeen + 1,
-            lastBleSuccessTime = System.currentTimeMillis()
-        )
+        scanStats.update { stats ->
+            stats.copy(
+                bleDevicesSeen = stats.bleDevicesSeen + 1,
+                lastBleSuccessTime = System.currentTimeMillis()
+            )
+        }
         val statsNow = System.currentTimeMillis()
         if (statsNow - lastScanStatsBroadcastTime >= SCAN_STATS_BROADCAST_THROTTLE_MS) {
             lastScanStatsBroadcastTime = statsNow
@@ -1585,6 +1617,9 @@ class ScanningService : Service() {
         // ==================== Handler-Based Detection ====================
         val handlerResult = processBleWithHandler(result)
         if (handlerResult != null) {
+            scanStats.update { stats -> stats.recordCandidate(handlerResult.detection.protocol) }
+            broadcastScanStats()
+
             // Handler found a detection - process it
             handleDetection(handlerResult.detection)
 
@@ -1682,9 +1717,9 @@ class ScanningService : Service() {
         }
 
         // Update total scan attempts
-        scanStats.value = scanStats.value.copy(
-            totalWifiScans = scanStats.value.totalWifiScans + 1
-        )
+        scanStats.update { stats ->
+            stats.copy(totalWifiScans = stats.totalWifiScans + 1)
+        }
         broadcastScanStats()
 
         try {
@@ -1781,10 +1816,12 @@ class ScanningService : Service() {
         Log.d(TAG, "Processing ${results.size} WiFi scan results")
 
         // Update scan stats
-        scanStats.value = scanStats.value.copy(
-            wifiNetworksSeen = scanStats.value.wifiNetworksSeen + results.size,
-            lastWifiSuccessTime = System.currentTimeMillis()
-        )
+        scanStats.update { stats ->
+            stats.copy(
+                wifiNetworksSeen = stats.wifiNetworksSeen + results.size,
+                lastWifiSuccessTime = System.currentTimeMillis()
+            )
+        }
         broadcastScanStats()
 
         // Feed results to monitors via handler
@@ -1798,7 +1835,23 @@ class ScanningService : Service() {
         // Process all scan results through WifiDetectionHandler
         serviceScope.launch {
             try {
+                val suppressionsBefore = wifiDetectionHandler.explicitSuppressionCount
                 val detections = wifiDetectionHandler.processData(results)
+                val suppressionDelta = wifiDetectionHandler.explicitSuppressionCount - suppressionsBefore
+
+                if (detections.isNotEmpty() || suppressionDelta > 0) {
+                    scanStats.update { current ->
+                        var updated = current
+                        if (detections.isNotEmpty()) {
+                            updated = updated.recordCandidate(DetectionProtocol.WIFI, detections.size)
+                        }
+                        if (suppressionDelta > 0) {
+                            updated = updated.recordExplicitWifiSuppressions(suppressionDelta)
+                        }
+                        updated
+                    }
+                    broadcastScanStats()
+                }
 
                 // Store enriched WiFi SSID/MAC match data for LLM analysis
                 val enrichedResults = wifiDetectionHandler.lastEnrichedResults
@@ -2322,6 +2375,8 @@ class ScanningService : Service() {
         }
 
         isScanning.value = false
+        // This path intentionally tears down the current loop before minting a new one.
+        scanLifecycleGate.markStopped()
         serviceScope.launch {
             delay(1000)
             startScanning()

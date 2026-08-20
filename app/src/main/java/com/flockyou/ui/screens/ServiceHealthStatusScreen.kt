@@ -866,6 +866,16 @@ private fun LiveScanActivityCard(
                     color = MaterialTheme.colorScheme.secondary
                 )
             }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "BLE  observed ${scanStats.bleDevicesSeen}  →  candidates ${scanStats.bleCandidates}  →  new ${scanStats.bleDetectionsCreated}  /  not new ${scanStats.bleDetectionsNotNew}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "WiFi observed ${scanStats.wifiNetworksSeen}  →  candidates ${scanStats.wifiCandidates}  →  new ${scanStats.wifiDetectionsCreated}  /  not new ${scanStats.wifiDetectionsNotNew}  ·  explicit FP suppressions ${scanStats.wifiExplicitSuppressions}",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }

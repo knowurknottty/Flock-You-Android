@@ -20,6 +20,7 @@ import com.flockyou.detection.handler.BleDetectionContext
 import com.flockyou.detection.handler.BleDetectionResult
 import com.flockyou.worker.BackgroundAnalysisWorker
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -94,12 +95,14 @@ internal suspend fun ScanningService.handleDetection(detection: Detection) {
             repository.upsertDetection(detectionWithFp)
         }
 
+        ScanningServiceState.scanStats.update { stats ->
+            stats.recordPersistenceOutcome(detectionWithFp.protocol, isNew)
+        }
+        broadcastScanStats()
+
         if (isNew) {
             // New detection
             ScanningServiceState.detectionCount.value++
-            ScanningServiceState.scanStats.value = ScanningServiceState.scanStats.value.copy(
-                detectionsCreated = ScanningServiceState.scanStats.value.detectionsCreated + 1
-            )
             ScanningServiceState.lastDetection.value = detectionWithFp
             broadcastLastDetection()
             broadcastStateToClients()
