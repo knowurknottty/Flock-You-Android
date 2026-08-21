@@ -259,7 +259,7 @@ fun StatusCard(
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 StatItem(
-                    label = "TOTAL",
+                    label = "DETECTIONS",
                     value = totalDetections.toString(),
                     color = MaterialTheme.colorScheme.primary
                 )

@@ -69,10 +69,23 @@ data class ScanStatistics(
     val throttledWifiScans: Int = 0,
     val bleDevicesSeen: Int = 0,
     val wifiNetworksSeen: Int = 0,
+    val bleCandidates: Int = 0,
+    val wifiCandidates: Int = 0,
+    val wifiExplicitSuppressions: Int = 0,
+    val bleDetectionsCreated: Int = 0,
+    val wifiDetectionsCreated: Int = 0,
+    val bleDetectionsNotNew: Int = 0,
+    val wifiDetectionsNotNew: Int = 0,
     val detectionsCreated: Int = 0,
     val lastBleSuccessTime: Long? = null,
     val lastWifiSuccessTime: Long? = null
-)
+) {
+    val bleNonCandidateObservations: Int
+        get() = (bleDevicesSeen - bleCandidates).coerceAtLeast(0)
+
+    val wifiNonCandidateObservations: Int
+        get() = (wifiNetworksSeen - wifiCandidates).coerceAtLeast(0)
+}
 
 /** Overall scanning status */
 sealed class ScanStatus {
