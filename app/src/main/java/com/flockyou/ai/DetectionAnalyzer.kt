@@ -287,7 +287,7 @@ class DetectionAnalyzer @Inject constructor(
         Log.i(TAG, "=== initializeModel START ===")
         withContext(Dispatchers.IO) {
             try {
-                val settings = aiSettingsRepository.settings.first()
+                val settings = aiSettingsRepository.settingsSnapshot()
                 Log.d(TAG, "initializeModel settings: enabled=${settings.enabled}, selectedModel=${settings.selectedModel}")
 
                 if (!settings.enabled) {
@@ -564,7 +564,7 @@ class DetectionAnalyzer @Inject constructor(
 
             if (actualFile != null) {
                 Log.i(TAG, "Found MediaPipe model for FP analysis: ${actualFile.name}")
-                val settings = aiSettingsRepository.settings.first()
+                val settings = aiSettingsRepository.settingsSnapshot()
                 val config = InferenceConfig.fromSettings(settings)
 
                 val success = mediaPipeLlmClient.initialize(actualFile, config)
@@ -584,7 +584,7 @@ class DetectionAnalyzer @Inject constructor(
 
         if (anyModelFile != null) {
             Log.i(TAG, "Found generic model file for FP analysis: ${anyModelFile.name}")
-            val settings = aiSettingsRepository.settings.first()
+            val settings = aiSettingsRepository.settingsSnapshot()
             val config = InferenceConfig.fromSettings(settings)
 
             val success = mediaPipeLlmClient.initialize(anyModelFile, config)
@@ -613,7 +613,7 @@ class DetectionAnalyzer @Inject constructor(
 
         // Lazy initialization: ensure model is loaded before analysis
         // This handles cases where model was downloaded but not yet initialized
-        val settings = aiSettingsRepository.settings.first()
+        val settings = aiSettingsRepository.settingsSnapshot()
         val modelFromSettings = AiModel.fromId(settings.selectedModel)
 
         Log.d(TAG, "Settings check:")
@@ -838,7 +838,7 @@ class DetectionAnalyzer @Inject constructor(
         Log.i(TAG, "=== analyzeProgressively START for ${detection.id} (${detection.deviceType}) ===")
 
         // Load settings once for the entire pipeline
-        val settings = aiSettingsRepository.settings.first()
+        val settings = aiSettingsRepository.settingsSnapshot()
 
         // Step 1: Check cache first (instant return if hit)
         val cachedResult = tryGetCachedResult(detection, settings)
@@ -1290,7 +1290,7 @@ class DetectionAnalyzer @Inject constructor(
             val tempFile = File(modelDir, "${model.id}$fileExtension.tmp")
 
             // Get HF token from settings for authenticated downloads
-            val hfToken = aiSettingsRepository.settings.first().huggingFaceToken.takeIf { it.isNotBlank() }
+            val hfToken = aiSettingsRepository.settingsSnapshot().huggingFaceToken.takeIf { it.isNotBlank() }
 
             // Retry logic with exponential backoff
             var lastException: Exception? = null
@@ -1657,7 +1657,7 @@ class DetectionAnalyzer @Inject constructor(
     }
 
     suspend fun isAvailable(): Boolean {
-        val settings = aiSettingsRepository.settings.first()
+        val settings = aiSettingsRepository.settingsSnapshot()
         return settings.enabled
     }
 

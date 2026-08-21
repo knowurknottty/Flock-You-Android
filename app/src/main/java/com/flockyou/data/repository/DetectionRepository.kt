@@ -60,6 +60,10 @@ class DetectionRepository @Inject constructor(
         return detectionDao.getAllDetectionsSnapshot()
     }
 
+    suspend fun getDetectionsBetween(startMillis: Long, endMillis: Long): List<Detection> {
+        return detectionDao.getDetectionsBetween(startMillis, endMillis)
+    }
+
     suspend fun insertDetection(detection: Detection) {
         detectionDao.insertDetection(detection)
     }
