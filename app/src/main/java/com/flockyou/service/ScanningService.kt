@@ -129,6 +129,7 @@ class ScanningService : Service() {
         private const val SEEN_WIFI_PUBLISH_DELAY_MS = 250L
         private const val MAX_SEEN_DEVICE_REGISTRY_SIZE = 100
         private const val HEARTBEAT_RECORD_INTERVAL_MS = 60_000L
+        private const val SETTINGS_ADMISSION_TIMEOUT_MS = 10_000L
         private const val BLE_WATCHDOG_THRESHOLD_MS = 60_000L
         private const val BLE_WATCHDOG_MAX_FAILURES = 3
 
@@ -299,8 +300,10 @@ class ScanningService : Service() {
     // Vibration
     internal lateinit var vibrator: Vibrator
 
-    // Scan job
+    // Scan lifecycle jobs
     private var scanJob: Job? = null
+    private var startupJob: Job? = null
+    private val detectorRestartJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
     // Settings collector jobs (for proper lifecycle management)
     private var broadcastSettingsJob: Job? = null
@@ -476,7 +479,7 @@ class ScanningService : Service() {
                         }
                     }
                     ScanningServiceIpc.MSG_STOP_SCANNING -> {
-                        if (isScanning.value) {
+                        if (isScanning.value || startupJob?.isActive == true) {
                             stopScanning()
                         }
                     }
@@ -784,100 +787,89 @@ class ScanningService : Service() {
 
     // ==================== Core Scan Loop ====================
 
-    @SuppressLint("MissingPermission")
-    private fun startScanning() {
-        if (isScanning.value) return
+    private fun applyScanSettings(settings: com.flockyou.data.ScanSettings) {
+        Log.d(TAG, "Scan settings updated - applying to detectors")
+        currentScanSettings = settings
 
-        scanStatus.value = ScanStatus.Starting
-        Log.d(TAG, "Starting scanning")
+        ultrasonicDetector?.updateScanTiming(
+            intervalSeconds = settings.ultrasonicScanIntervalSeconds,
+            durationSeconds = settings.ultrasonicScanDurationSeconds
+        )
+        gnssSatelliteMonitor?.updateScanTiming(settings.gnssScanIntervalSeconds)
+        satelliteMonitor?.updateScanTiming(settings.satelliteScanIntervalSeconds)
+        cellularMonitor?.updateScanTiming(settings.cellularScanIntervalSeconds)
 
-        // Collect broadcast settings
+        currentSettings.value = ScanningRuntimePolicy.toRuntimeScanConfig(settings)
+        updateEffectiveBatteryMode()
+    }
+
+    private fun applyDetectionSettings(settings: com.flockyou.data.DetectionSettings) {
+        currentDetectionSettings = settings
+        rfSignalAnalyzer?.enableHiddenNetworkRfAnomaly = settings.enableHiddenNetworkRfAnomaly
+        rogueWifiMonitor?.minTrackingDistanceMeters = settings.wifiThresholds.minTrackingDistanceMeters
+        Log.d(
+            TAG,
+            "Detection settings updated - hidden network RF anomaly: ${settings.enableHiddenNetworkRfAnomaly}, " +
+                "min tracking distance: ${settings.wifiThresholds.minTrackingDistanceMeters}m"
+        )
+    }
+
+    private fun stopSettingsCollectionJobs() {
+        broadcastSettingsJob?.cancel()
+        broadcastSettingsJob = null
+        privacySettingsJob?.cancel()
+        privacySettingsJob = null
+        scanSettingsJob?.cancel()
+        scanSettingsJob = null
+        notificationSettingsJob?.cancel()
+        notificationSettingsJob = null
+        detectionSettingsJob?.cancel()
+        detectionSettingsJob = null
+    }
+
+    private fun startSettingsCollectionJobs() {
+        stopSettingsCollectionJobs()
+
         broadcastSettingsJob = serviceScope.launch {
             broadcastSettingsRepository.settings.collect { settings ->
                 currentBroadcastSettings = settings
             }
         }
 
-        // Collect privacy settings for ephemeral mode, location-optional storage, and ultrasonic opt-in
         privacySettingsJob = serviceScope.launch {
-            var isFirstEmission = true
             privacySettingsRepository.settings.collect { settings ->
-                val previousSettings = currentPrivacySettings
+                val previous = currentPrivacySettings
+                val wasUltrasonicEnabled = previous.ultrasonicDetectionEnabled &&
+                    previous.ultrasonicConsentAcknowledged
+                val isUltrasonicEnabled = settings.ultrasonicDetectionEnabled &&
+                    settings.ultrasonicConsentAcknowledged
+                val ephemeralJustEnabled = settings.ephemeralModeEnabled && !previous.ephemeralModeEnabled
+
                 currentPrivacySettings = settings
 
-                // Clear ephemeral data when ephemeral mode is enabled (on service restart)
-                if (settings.ephemeralModeEnabled) {
+                if (ephemeralJustEnabled) {
                     ephemeralRepository.clearAll()
-                    enrichedDataCache.clear() // Also clear enriched data for privacy
-                    Log.d(TAG, "Ephemeral mode active - in-memory storage only")
+                    enrichedDataCache.clear()
+                    Log.d(TAG, "Ephemeral mode enabled - cleared in-memory analysis state")
                 }
-
-                // Update cellular monitor ephemeral mode
                 cellularMonitor?.setEphemeralMode(settings.ephemeralModeEnabled)
 
-                // Handle ultrasonic detection opt-in/opt-out changes
-                // On first emission, start if enabled (handles service restart with ultrasonic already enabled)
-                // On subsequent emissions, only react to actual changes
-                val shouldStart = settings.ultrasonicDetectionEnabled && settings.ultrasonicConsentAcknowledged
-                val settingChanged = settings.ultrasonicDetectionEnabled != previousSettings.ultrasonicDetectionEnabled
-
-                if (isFirstEmission && shouldStart) {
-                    Log.i(TAG, "Ultrasonic detection enabled on startup - starting monitoring")
-                    startUltrasonicDetection()
-                } else if (!isFirstEmission && settingChanged) {
-                    if (shouldStart) {
-                        Log.i(TAG, "Ultrasonic detection enabled by user - starting monitoring")
+                if (isUltrasonicEnabled != wasUltrasonicEnabled) {
+                    if (isUltrasonicEnabled) {
+                        Log.i(TAG, "Ultrasonic detection enabled by admitted privacy settings")
                         startUltrasonicDetection()
                     } else {
-                        Log.i(TAG, "Ultrasonic detection disabled by user - stopping monitoring")
+                        Log.i(TAG, "Ultrasonic detection disabled by privacy settings")
                         stopUltrasonicDetection()
                     }
                 }
-
-                isFirstEmission = false
             }
         }
 
-        // Collect scan settings and update detector timings
         scanSettingsJob = serviceScope.launch {
-            scanSettingsRepository.settings.collect { settings ->
-                Log.d(TAG, "Scan settings updated - applying to detectors")
-
-                // Store current settings for battery-adaptive calculations
-                currentScanSettings = settings
-
-                // Update ultrasonic detector timing
-                ultrasonicDetector?.updateScanTiming(
-                    intervalSeconds = settings.ultrasonicScanIntervalSeconds,
-                    durationSeconds = settings.ultrasonicScanDurationSeconds
-                )
-
-                // Update GNSS satellite monitor timing
-                gnssSatelliteMonitor?.updateScanTiming(settings.gnssScanIntervalSeconds)
-
-                // Update satellite monitor timing
-                satelliteMonitor?.updateScanTiming(settings.satelliteScanIntervalSeconds)
-
-                // Update cellular monitor timing
-                cellularMonitor?.updateScanTiming(settings.cellularScanIntervalSeconds)
-
-                // Update WiFi/BLE scan config (these are used by the scan loop)
-                currentSettings.value = ScanConfig(
-                    wifiScanInterval = settings.wifiScanIntervalSeconds * 1000L,
-                    bleScanDuration = settings.bleScanDurationSeconds * 1000L,
-                    inactiveTimeout = settings.inactiveTimeoutSeconds * 1000L,
-                    seenDeviceTimeout = settings.seenDeviceTimeoutMinutes * 60 * 1000L,
-                    enableBle = settings.enableBleScanning,
-                    enableWifi = settings.enableWifiScanning,
-                    trackSeenDevices = settings.trackSeenDevices
-                )
-
-                // Recalculate effective battery mode when settings change
-                updateEffectiveBatteryMode()
-            }
+            scanSettingsRepository.settings.collect(::applyScanSettings)
         }
 
-        // Collect notification settings for emergency popup feature
         notificationSettingsJob = serviceScope.launch {
             notificationSettingsRepository.settings.collect { settings ->
                 currentNotificationSettings = settings
@@ -885,17 +877,72 @@ class ScanningService : Service() {
             }
         }
 
-        // Collect detection settings for RF anomaly and tracking thresholds
         detectionSettingsJob = serviceScope.launch {
-            detectionSettingsRepository.settings.collect { settings ->
-                currentDetectionSettings = settings
-                // Update RF signal analyzer with hidden network anomaly setting
-                rfSignalAnalyzer?.enableHiddenNetworkRfAnomaly = settings.enableHiddenNetworkRfAnomaly
-                // Update rogue WiFi monitor with tracking distance threshold
-                rogueWifiMonitor?.minTrackingDistanceMeters = settings.wifiThresholds.minTrackingDistanceMeters
-                Log.d(TAG, "Detection settings updated - hidden network RF anomaly: ${settings.enableHiddenNetworkRfAnomaly}, min tracking distance: ${settings.wifiThresholds.minTrackingDistanceMeters}m")
+            detectionSettingsRepository.settings.collect(::applyDetectionSettings)
+        }
+    }
+
+    /**
+     * Admit persisted settings before any active scanner/subsystem starts.
+     *
+     * Failure is fail-closed: constrained-device and privacy policy are never
+     * replaced with generic in-memory defaults merely because DataStore was
+     * temporarily unavailable (for example during Direct Boot).
+     */
+    private fun startScanning() {
+        if (isScanning.value || startupJob?.isActive == true) return
+
+        scanStatus.value = ScanStatus.Starting
+        startupJob = serviceScope.launch {
+            try {
+                withTimeout(SETTINGS_ADMISSION_TIMEOUT_MS) {
+                    currentBroadcastSettings = broadcastSettingsRepository.settings.first()
+                    currentPrivacySettings = privacySettingsRepository.settings.first()
+                    applyScanSettings(scanSettingsRepository.settings.first())
+                    currentNotificationSettings = notificationSettingsRepository.settings.first()
+                    applyDetectionSettings(detectionSettingsRepository.settings.first())
+
+                    cellularMonitor?.setEphemeralMode(currentPrivacySettings.ephemeralModeEnabled)
+                    if (currentPrivacySettings.ephemeralModeEnabled) {
+                        ephemeralRepository.clearAll()
+                        enrichedDataCache.clear()
+                    }
+                }
+
+                if (!isActive) return@launch
+                acquireWakeLock()
+                startScanningAdmitted()
+            } catch (e: TimeoutCancellationException) {
+                Log.w(TAG, "Persisted scanner settings were not available before admission timeout")
+                scanStatus.value = ScanStatus.Error(
+                    "Scanner settings unavailable; waiting for a later start/restart",
+                    recoverable = true
+                )
+                releaseWakeLock()
+            } catch (e: CancellationException) {
+                scanStatus.value = ScanStatus.Idle
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to admit persisted scanner settings", e)
+                scanStatus.value = ScanStatus.Error(
+                    "Failed to load scanner settings: ${e.message ?: e.javaClass.simpleName}",
+                    recoverable = true
+                )
+                releaseWakeLock()
+            } finally {
+                startupJob = null
             }
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startScanningAdmitted() {
+        if (isScanning.value) return
+
+        scanStatus.value = ScanStatus.Starting
+        Log.d(TAG, "Starting scanning")
+
+        startSettingsCollectionJobs()
 
         // Register screen lock receiver for auto-purge feature (Priority 5)
         try {
@@ -957,10 +1004,12 @@ class ScanningService : Service() {
         // Start RF signal analysis
         startRfSignalAnalysis()
 
-        // Note: Ultrasonic detection is started by the privacy settings collector above
-        // when it receives the first emission (handles the race condition between settings
-        // loading and this point in the code). This ensures ultrasonic starts even if
-        // settings are already enabled when the service restarts.
+        // Persisted privacy settings were admitted before active scanning. Start the
+        // opt-in detector explicitly; later settings transitions are handled by the collector.
+        if (currentPrivacySettings.ultrasonicDetectionEnabled &&
+            currentPrivacySettings.ultrasonicConsentAcknowledged) {
+            startUltrasonicDetection()
+        }
 
         // Start GNSS satellite monitoring (uses location permission already granted)
         startGnssMonitoring()
@@ -990,8 +1039,8 @@ class ScanningService : Service() {
         // This is non-blocking and failures are logged but don't crash the service
         warmUpLlmEngine()
 
-        // Start heartbeat monitoring - sends periodic heartbeats to watchdog
-        ServiceRestartReceiver.scheduleHeartbeat(this)
+        // Persist liveness in-process; the inexact watchdog and JobScheduler backup
+        // consume this signal without a recurring one-minute exact wake alarm.
         ServiceRestartReceiver.scheduleJobSchedulerBackup(this)
 
         // Record heartbeat immediately so watchdog knows we're alive.
@@ -1061,9 +1110,11 @@ class ScanningService : Service() {
                     // === BLE BURST SCAN ===
                     if (scanConfig.enableBle) {
                         try {
-                            val aggressiveBle = scanConfig.aggressiveBleMode &&
-                            batteryMode == com.flockyou.data.BatteryAdaptiveMode.PERFORMANCE
-                        startBleScan(aggressiveBle)
+                            val aggressiveBle = ScanningRuntimePolicy.shouldUseAggressiveBle(
+                                scanConfig,
+                                batteryMode
+                            )
+                            startBleScan(aggressiveBle)
                             delay(effectiveBleScanDuration)
                             stopBleScan()
                             consecutiveBleErrors = 0 // Reset on success
@@ -1159,22 +1210,20 @@ class ScanningService : Service() {
         scanStatus.value = ScanStatus.Stopping
         isScanning.value = false
 
+        val pendingStartup = startupJob
+        startupJob = null
+        pendingStartup?.cancel()
+
+        detectorRestartJobs.values.forEach { it.cancel() }
+        detectorRestartJobs.clear()
+
         // Notify IPC clients that scanning has stopped
         broadcastScanningStopped()
 
-        // Cancel settings collector jobs
-        broadcastSettingsJob?.cancel()
-        broadcastSettingsJob = null
-        privacySettingsJob?.cancel()
-        privacySettingsJob = null
-        scanSettingsJob?.cancel()
-        scanSettingsJob = null
-        notificationSettingsJob?.cancel()
-        notificationSettingsJob = null
-        detectionSettingsJob?.cancel()
-        detectionSettingsJob = null
+        stopSettingsCollectionJobs()
 
         scanJob?.cancel()
+        scanJob = null
         bleProcessorJob?.cancel()
         bleProcessorJob = null
         while (bleResultChannel.tryReceive().isSuccess) { /* drain stale callbacks */ }
@@ -1430,7 +1479,7 @@ class ScanningService : Service() {
     // ==================== BLE Scanning ====================
 
     @SuppressLint("MissingPermission")
-    private fun startBleScan(aggressiveMode: Boolean = true) {
+    private fun startBleScan(aggressiveMode: Boolean) {
         if (!hasBluetoothPermissions()) {
             bleStatus.value = SubsystemStatus.PermissionDenied("BLUETOOTH_SCAN")
             Log.w(TAG, "Missing Bluetooth permissions")
@@ -2220,15 +2269,21 @@ class ScanningService : Service() {
             restartScanningLoopIfNeeded()
         }
 
-        if (cellularMonitor != null) {
-            if (cellularAnomalyJob == null || cellularAnomalyJob?.isActive != true) {
-                Log.w(TAG, "WATCHDOG: Cellular anomaly job stopped, restarting...")
-                restartCellularMonitoringJobs()
-            }
+        if (cellularMonitor != null &&
+            (cellularAnomalyJob == null || cellularAnomalyJob?.isActive != true)) {
+            Log.w(TAG, "WATCHDOG: Cellular anomaly job stopped, restarting...")
+            restartCellularMonitoringJobs()
         }
 
-        if (broadcastSettingsJob == null || broadcastSettingsJob?.isActive != true) {
-            Log.w(TAG, "WATCHDOG: Broadcast settings job stopped, restarting...")
+        val settingsHealthy = listOf(
+            broadcastSettingsJob,
+            privacySettingsJob,
+            scanSettingsJob,
+            notificationSettingsJob,
+            detectionSettingsJob
+        ).all { it?.isActive == true }
+        if (!settingsHealthy) {
+            Log.w(TAG, "WATCHDOG: One or more settings collectors stopped, restarting canonical collectors...")
             restartSettingsCollectionJobs()
         }
 
@@ -2249,13 +2304,11 @@ class ScanningService : Service() {
     }
 
     private fun restartCellularMonitoringJobs() {
-        cellularAnomalyJob?.cancel()
-        cellularStatusJob?.cancel()
-        cellularHistoryJob?.cancel()
-        cellularEventsJob?.cancel()
-
         try {
-            startCellularMonitoring()
+            stopCellularMonitoring()
+            if (currentSettings.value.enableCellular && isScanning.value) {
+                startCellularMonitoring()
+            }
             Log.i(TAG, "Cellular monitoring jobs restarted")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to restart cellular monitoring jobs", e)
@@ -2263,44 +2316,9 @@ class ScanningService : Service() {
     }
 
     private fun restartSettingsCollectionJobs() {
-        broadcastSettingsJob?.cancel()
-        privacySettingsJob?.cancel()
-        scanSettingsJob?.cancel()
-        notificationSettingsJob?.cancel()
-        detectionSettingsJob?.cancel()
-
         try {
-            broadcastSettingsJob = serviceScope.launch {
-                broadcastSettingsRepository.settings.collect { settings ->
-                    currentBroadcastSettings = settings
-                }
-            }
-
-            privacySettingsJob = serviceScope.launch {
-                privacySettingsRepository.settings.collect { settings ->
-                    currentPrivacySettings = settings
-                }
-            }
-
-            scanSettingsJob = serviceScope.launch {
-                scanSettingsRepository.settings.collect { settings ->
-                    currentScanSettings = settings
-                }
-            }
-
-            notificationSettingsJob = serviceScope.launch {
-                notificationSettingsRepository.settings.collect { settings ->
-                    currentNotificationSettings = settings
-                }
-            }
-
-            detectionSettingsJob = serviceScope.launch {
-                detectionSettingsRepository.settings.collect { settings ->
-                    currentDetectionSettings = settings
-                }
-            }
-
-            Log.i(TAG, "Settings collection jobs restarted")
+            startSettingsCollectionJobs()
+            Log.i(TAG, "Canonical settings collection jobs restarted")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to restart settings collection jobs", e)
         }
@@ -2312,17 +2330,9 @@ class ScanningService : Service() {
             return
         }
 
-        Log.i(TAG, "Restarting scanning loop via full restart...")
-
-        scanJob?.cancel()
-        scanJob = null
-
-        if (isBleScanningActive) {
-            stopBleScan()
-        }
-
-        isScanning.value = false
+        Log.i(TAG, "Restarting scanner through coherent teardown and settings re-admission")
         serviceScope.launch {
+            stopScanning()
             delay(1000)
             startScanning()
         }
@@ -2347,10 +2357,21 @@ class ScanningService : Service() {
         if (recoverable && currentStatus != null &&
             currentStatus.consecutiveFailures < MAX_CONSECUTIVE_FAILURES &&
             currentStatus.restartCount < MAX_RESTART_ATTEMPTS) {
-            val delayMs = (1000L * (1 shl currentStatus.consecutiveFailures.coerceAtMost(4))).coerceAtMost(30_000L)
-            serviceScope.launch {
-                delay(delayMs)
-                attemptDetectorRestart(detectorName)
+            val delayMs = (1000L * (1 shl currentStatus.consecutiveFailures.coerceAtMost(4)))
+                .coerceAtMost(30_000L)
+            detectorRestartJobs.compute(detectorName) { _, existing ->
+                if (existing?.isActive == true) {
+                    existing
+                } else {
+                    serviceScope.launch {
+                        delay(delayMs)
+                        if (isScanning.value) {
+                            attemptDetectorRestart(detectorName)
+                        } else {
+                            Log.d(TAG, "Skipping delayed $detectorName restart because scanning stopped")
+                        }
+                    }
+                }
             }
         }
 
@@ -2358,6 +2379,7 @@ class ScanningService : Service() {
     }
 
     private fun handleDetectorSuccess(detectorName: String) {
+        detectorRestartJobs.remove(detectorName)?.cancel()
         updateDetectorHealth(detectorName) { current ->
             current.copy(
                 lastSuccessfulScan = System.currentTimeMillis(),
@@ -2391,8 +2413,17 @@ class ScanningService : Service() {
     }
 
     private fun attemptDetectorRestart(detectorName: String) {
-        Log.i(TAG, "Attempting to restart detector: $detectorName")
+        if (!isScanning.value) {
+            Log.d(TAG, "Skipping $detectorName restart because scanning is stopped")
+            return
+        }
 
+        if (detectorName == DetectorHealthStatus.DETECTOR_BLE && !currentSettings.value.enableBle) {
+            Log.d(TAG, "Skipping BLE restart because BLE scanning is disabled")
+            return
+        }
+
+        Log.i(TAG, "Attempting to restart detector: $detectorName")
         updateDetectorHealth(detectorName) { current ->
             current.copy(restartCount = current.restartCount + 1)
         }
@@ -2400,17 +2431,17 @@ class ScanningService : Service() {
         when (detectorName) {
             DetectorHealthStatus.DETECTOR_ULTRASONIC -> {
                 try {
-                    ultrasonicDetector?.stopMonitoring()
-                    ultrasonicDetector?.startMonitoring()
-                    Log.i(TAG, "Ultrasonic detector restarted")
+                    stopUltrasonicDetection()
+                    startUltrasonicDetection()
+                    Log.i(TAG, "Ultrasonic detector restarted through policy-aware lifecycle")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to restart ultrasonic detector", e)
                 }
             }
             DetectorHealthStatus.DETECTOR_ROGUE_WIFI -> {
                 try {
-                    rogueWifiMonitor?.stopMonitoring()
-                    rogueWifiMonitor?.startMonitoring()
+                    stopRogueWifiMonitoring()
+                    startRogueWifiMonitoring()
                     Log.i(TAG, "Rogue WiFi monitor restarted")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to restart rogue WiFi monitor", e)
@@ -2418,17 +2449,17 @@ class ScanningService : Service() {
             }
             DetectorHealthStatus.DETECTOR_RF_SIGNAL -> {
                 try {
-                    rfSignalAnalyzer?.stopMonitoring()
-                    rfSignalAnalyzer?.startMonitoring()
-                    Log.i(TAG, "RF signal analyzer restarted")
+                    stopRfSignalAnalysis()
+                    startRfSignalAnalysis()
+                    Log.i(TAG, "RF signal analyzer restarted through settings-aware lifecycle")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to restart RF signal analyzer", e)
                 }
             }
             DetectorHealthStatus.DETECTOR_CELLULAR -> {
                 try {
-                    cellularMonitor?.stopMonitoring()
-                    cellularMonitor?.startMonitoring()
+                    stopCellularMonitoring()
+                    if (currentSettings.value.enableCellular) startCellularMonitoring()
                     Log.i(TAG, "Cellular monitor restarted")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to restart cellular monitor", e)
@@ -2436,17 +2467,17 @@ class ScanningService : Service() {
             }
             DetectorHealthStatus.DETECTOR_GNSS -> {
                 try {
-                    gnssSatelliteMonitor?.stopMonitoring()
-                    gnssSatelliteMonitor?.startMonitoring()
-                    Log.i(TAG, "GNSS monitor restarted")
+                    stopGnssMonitoring()
+                    startGnssMonitoring()
+                    Log.i(TAG, "GNSS monitor restarted through settings-aware lifecycle")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to restart GNSS monitor", e)
                 }
             }
             DetectorHealthStatus.DETECTOR_SATELLITE -> {
                 try {
-                    satelliteMonitor?.stopMonitoring()
-                    satelliteMonitor?.startMonitoring()
+                    stopSatelliteMonitoring()
+                    startSatelliteMonitoring()
                     Log.i(TAG, "Satellite monitor restarted")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to restart satellite monitor", e)
@@ -2455,8 +2486,12 @@ class ScanningService : Service() {
             DetectorHealthStatus.DETECTOR_BLE -> {
                 try {
                     stopBleScan()
-                    startBleScan()
-                    Log.i(TAG, "BLE scanner restarted")
+                    val aggressive = ScanningRuntimePolicy.shouldUseAggressiveBle(
+                        currentSettings.value,
+                        currentBatteryMode.value
+                    )
+                    startBleScan(aggressive)
+                    Log.i(TAG, "BLE scanner restarted with policy-preserving mode (aggressive=$aggressive)")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to restart BLE scanner", e)
                 }

@@ -32,7 +32,7 @@ data class ScanConfig(
     val enableWifi: Boolean = true,
     val enableCellular: Boolean = true,
     val trackSeenDevices: Boolean = true,
-    val aggressiveBleMode: Boolean = true
+    val aggressiveBleMode: Boolean = false
 )
 
 /** Seen device that didn't match surveillance patterns */

@@ -30,7 +30,6 @@ class ServiceRestartReceiver : BroadcastReceiver() {
         private const val ACTION_HEARTBEAT = "com.flockyou.SERVICE_HEARTBEAT"
         private const val RESTART_DELAY_MS = 3000L // 3 seconds (faster restart)
         private const val WATCHDOG_INTERVAL_MS = 5 * 60 * 1000L // 5 minutes (more frequent)
-        private const val HEARTBEAT_INTERVAL_MS = 60 * 1000L // 1 minute heartbeat
         private const val JOB_ID_RESTART = 1001
         private const val PREFS_NAME = "service_watchdog"
         private const val KEY_LAST_HEARTBEAT = "last_heartbeat"
@@ -153,38 +152,6 @@ class ServiceRestartReceiver : BroadcastReceiver() {
         }
 
         /**
-         * Schedule a heartbeat alarm - more frequent check
-         */
-        fun scheduleHeartbeat(context: Context) {
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val intent = Intent(context, ServiceRestartReceiver::class.java).apply {
-                action = ACTION_HEARTBEAT
-            }
-
-            val pendingIntent = PendingIntent.getBroadcast(
-                context,
-                2, // Different request code for heartbeat
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            val triggerTime = SystemClock.elapsedRealtime() + HEARTBEAT_INTERVAL_MS
-
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    alarmManager.setExactAndAllowWhileIdle(
-                        AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                        triggerTime,
-                        pendingIntent
-                    )
-                }
-                Log.d(TAG, "Heartbeat alarm scheduled for ${HEARTBEAT_INTERVAL_MS}ms")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to schedule heartbeat alarm", e)
-            }
-        }
-
-        /**
          * Record service heartbeat - call this from ScanningService periodically
          */
         fun recordHeartbeat(context: Context) {
@@ -281,8 +248,9 @@ class ServiceRestartReceiver : BroadcastReceiver() {
                 } else {
                     Log.d(TAG, "Heartbeat OK - service is running")
                 }
-                // Schedule next heartbeat
-                scheduleHeartbeat(context)
+                // Do not reschedule this legacy heartbeat. The in-process scanner
+                // records liveness every minute; the five-minute inexact watchdog and
+                // JobScheduler backup consume that signal without a one-minute wake alarm.
             }
             ACTION_RESTART -> {
                 // Check if service is already running

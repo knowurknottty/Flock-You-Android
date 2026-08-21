@@ -226,7 +226,10 @@ object ScanningServiceState {
             enableBle = enableBle,
             enableWifi = enableWifi,
             enableCellular = enableCellular,
-            trackSeenDevices = trackSeenDevices
+            trackSeenDevices = trackSeenDevices,
+            // This API represents an admitted operator configuration. The
+            // effective battery mode still gates actual LOW_LATENCY BLE.
+            aggressiveBleMode = true
         )
     }
 
