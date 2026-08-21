@@ -6,6 +6,7 @@ import com.flockyou.data.model.Detection
 import com.flockyou.data.model.DetectionMethod
 import com.flockyou.data.model.DetectionProtocol
 import com.flockyou.data.model.DetectionSource
+import com.flockyou.data.model.DeviceType
 import com.flockyou.data.model.SignalStrength
 import com.flockyou.data.model.ThreatLevel
 import com.flockyou.data.model.rssiToSignalStrength
@@ -15,19 +16,25 @@ import com.flockyou.scanner.CellularAnomalyType
 import com.flockyou.testmode.scanner.MockBleScanner
 import com.flockyou.testmode.scanner.MockBleScanResult
 import com.flockyou.testmode.scanner.MockCellularScanner
+import com.flockyou.testmode.scanner.MockGnssScanner
+import com.flockyou.testmode.scanner.GnssAnomaly
+import com.flockyou.testmode.scanner.GnssAnomalyType
+import com.flockyou.testmode.scanner.MockAudioScanner
+import com.flockyou.testmode.scanner.UltrasonicDetection
 import com.flockyou.testmode.scanner.MockWifiScanner
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
@@ -66,6 +73,8 @@ class TestModeOrchestrator @Inject constructor(
     private val mockWifiScanner = MockWifiScanner()
     private val mockBleScanner = MockBleScanner()
     private val mockCellularScanner = MockCellularScanner()
+    private val mockGnssScanner = MockGnssScanner()
+    private val mockAudioScanner = MockAudioScanner()
 
     // Active scenario job
     private var scenarioJob: Job? = null
@@ -81,7 +90,7 @@ class TestModeOrchestrator @Inject constructor(
         Log.i(TAG, "Enabling test mode${scenarioId?.let { " with scenario: $it" } ?: ""}")
 
         _config.update { it.copy(enabled = true, activeScenarioId = scenarioId) }
-        _status.update { it.copy(isActive = true, startTime = System.currentTimeMillis()) }
+        _status.update { it.copy(isActive = true, startTime = null) }
 
         if (scenarioId != null) {
             startScenario(scenarioId)
@@ -114,11 +123,14 @@ class TestModeOrchestrator @Inject constructor(
 
         Log.i(TAG, "Starting scenario: ${scenario.name}")
 
-        scenarioJob?.cancel()
+        val previousJob = scenarioJob
         scenarioJob = scope.launch {
+            previousJob?.cancelAndJoin()
             _config.update { it.copy(activeScenarioId = scenarioId) }
             _status.update {
                 it.copy(
+                    isActive = true,
+                    startTime = System.currentTimeMillis(),
                     activeScenarioId = scenarioId,
                     activeScenarioName = scenario.name,
                     detectionCount = 0
@@ -150,7 +162,7 @@ class TestModeOrchestrator @Inject constructor(
         stopAllMockScanners()
 
         _config.update { it.copy(activeScenarioId = null) }
-        _status.update { it.copy(activeScenarioId = null, activeScenarioName = null) }
+        _status.update { it.copy(activeScenarioId = null, activeScenarioName = null, startTime = null) }
     }
 
     /**
@@ -163,9 +175,27 @@ class TestModeOrchestrator @Inject constructor(
      */
     fun updateConfig(newConfig: TestModeConfig) {
         _config.value = newConfig
+        val latitude = newConfig.syntheticLatitude
+        val longitude = newConfig.syntheticLongitude
+        val syntheticLocation = SyntheticLocationPolicy.validated(latitude, longitude)
+        if (syntheticLocation != null) {
+            updateLocation(syntheticLocation.latitude, syntheticLocation.longitude)
+        } else {
+            currentLatitude = null
+            currentLongitude = null
+            if (latitude != null || longitude != null) {
+                Log.w(TAG, "Rejected incomplete or out-of-range synthetic location")
+            }
+        }
         mockWifiScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
         mockBleScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
         mockCellularScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
+        mockGnssScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
+        mockAudioScanner.setEmissionInterval(newConfig.dataEmissionIntervalMs)
+        mockWifiScanner.setSignalVariationEnabled(newConfig.simulateSignalVariation)
+        mockBleScanner.setRssiVariationEnabled(newConfig.simulateSignalVariation)
+        mockCellularScanner.setSignalVariation(newConfig.simulateSignalVariation)
+        mockAudioScanner.setAmplitudeVariation(newConfig.simulateSignalVariation)
     }
 
     /**
@@ -238,6 +268,15 @@ class TestModeOrchestrator @Inject constructor(
         data.cellularState?.let { state ->
             mockCellularScanner.setMockData(state)
         }
+
+        data.gnssState?.let { state ->
+            mockGnssScanner.clearAnomalies()
+            mockGnssScanner.setMockData(state)
+        }
+
+        if (data.audioBeacons.isNotEmpty()) {
+            mockAudioScanner.setMockBeacons(data.audioBeacons)
+        }
     }
 
     private fun startMockScanners(data: TestScenarioData) {
@@ -252,6 +291,12 @@ class TestModeOrchestrator @Inject constructor(
         if (data.cellularState != null) {
             mockCellularScanner.start()
         }
+        if (data.gnssState != null) {
+            mockGnssScanner.start()
+        }
+        if (data.audioBeacons.isNotEmpty()) {
+            mockAudioScanner.start()
+        }
     }
 
     private fun stopAllMockScanners() {
@@ -259,11 +304,14 @@ class TestModeOrchestrator @Inject constructor(
         mockWifiScanner.stop()
         mockBleScanner.stop()
         mockCellularScanner.stop()
+        mockGnssScanner.stop()
+        mockAudioScanner.stop()
     }
 
-    private suspend fun collectAndProcessMockData() {
-        // Collect from all active mock scanners
-        scope.launch {
+    private suspend fun collectAndProcessMockData(): Nothing = coroutineScope {
+        // Collectors are children of the active scenario session. Cancelling or replacing
+        // the scenario therefore cancels the entire collector set before a new one starts.
+        launch {
             mockWifiScanner.scanResults.collect { results ->
                 try {
                     processWifiResults(results)
@@ -273,7 +321,7 @@ class TestModeOrchestrator @Inject constructor(
             }
         }
 
-        scope.launch {
+        launch {
             mockBleScanner.mockResults.collect { result ->
                 try {
                     processBleResult(result)
@@ -283,7 +331,7 @@ class TestModeOrchestrator @Inject constructor(
             }
         }
 
-        scope.launch {
+        launch {
             mockCellularScanner.anomalies.collect { anomalies ->
                 try {
                     processCellularAnomalies(anomalies)
@@ -293,10 +341,28 @@ class TestModeOrchestrator @Inject constructor(
             }
         }
 
-        // Keep running until cancelled
-        while (scope.isActive) {
-            delay(1000)
+        launch {
+            mockGnssScanner.anomalies.collect { anomalies ->
+                try {
+                    processGnssAnomalies(anomalies)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing GNSS anomalies", e)
+                }
+            }
         }
+
+        launch {
+            mockAudioScanner.detections.collect { detection ->
+                try {
+                    processUltrasonicDetection(detection)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing ultrasonic detection", e)
+                }
+            }
+        }
+
+        // Keep the scenario session alive until it is explicitly stopped or replaced.
+        awaitCancellation()
     }
 
     private suspend fun processWifiResults(results: List<android.net.wifi.ScanResult>) {
@@ -411,6 +477,89 @@ class TestModeOrchestrator @Inject constructor(
             incrementDetectionCount()
         }
     }
+
+    private suspend fun processGnssAnomalies(anomalies: List<GnssAnomaly>) {
+        for (anomaly in anomalies) {
+            val (method, deviceType, threatLevel, threatScore) = when (anomaly.type) {
+                GnssAnomalyType.SPOOFING_DETECTED -> Quadruple(
+                    DetectionMethod.GNSS_SPOOFING, DeviceType.GNSS_SPOOFER, ThreatLevel.CRITICAL, 95
+                )
+                GnssAnomalyType.JAMMING -> Quadruple(
+                    DetectionMethod.GNSS_JAMMING, DeviceType.GNSS_JAMMER, ThreatLevel.CRITICAL, 90
+                )
+                GnssAnomalyType.UNIFORM_CN0 -> Quadruple(
+                    DetectionMethod.GNSS_SIGNAL_ANOMALY, DeviceType.GNSS_SPOOFER, ThreatLevel.HIGH, 75
+                )
+                GnssAnomalyType.CONSTELLATION_MISMATCH -> Quadruple(
+                    DetectionMethod.GNSS_CONSTELLATION_ANOMALY, DeviceType.GNSS_SPOOFER, ThreatLevel.HIGH, 75
+                )
+                GnssAnomalyType.POSITION_JUMP -> Quadruple(
+                    DetectionMethod.GNSS_GEOMETRY_ANOMALY, DeviceType.GNSS_SPOOFER, ThreatLevel.HIGH, 75
+                )
+                GnssAnomalyType.CLOCK_DRIFT -> Quadruple(
+                    DetectionMethod.GNSS_CLOCK_ANOMALY, DeviceType.GNSS_SPOOFER, ThreatLevel.HIGH, 75
+                )
+                GnssAnomalyType.FIX_LOST -> Quadruple(
+                    DetectionMethod.GNSS_SIGNAL_LOSS, DeviceType.GNSS_JAMMER, ThreatLevel.HIGH, 70
+                )
+            }
+            val detection = Detection(
+                id = UUID.randomUUID().toString(),
+                timestamp = anomaly.timestamp,
+                protocol = DetectionProtocol.GNSS,
+                detectionMethod = method,
+                deviceType = deviceType,
+                deviceName = "Test GNSS ${anomaly.type.name}",
+                rssi = -100,
+                signalStrength = SignalStrength.UNKNOWN,
+                latitude = currentLatitude,
+                longitude = currentLongitude,
+                threatLevel = threatLevel,
+                threatScore = threatScore,
+                matchedPatterns = "[TEST_MODE,${anomaly.type.name}]",
+                rawData = buildString {
+                    append(anomaly.description)
+                    append("; cn0Average=").append(anomaly.cn0Average)
+                    append("; satelliteCount=").append(anomaly.satelliteCount)
+                    append("; hdop=").append(anomaly.hdop)
+                    if (anomaly.metadata.isNotEmpty()) append("; metadata=").append(anomaly.metadata)
+                },
+                detectionSource = DetectionSource.GNSS
+            )
+            detectionRepository.upsertDetection(detection)
+            incrementDetectionCount()
+        }
+    }
+
+    private suspend fun processUltrasonicDetection(result: UltrasonicDetection) {
+        val method = when (result.beaconType) {
+            MockAudioBeacon.TYPE_AD_TRACKING, MockAudioBeacon.TYPE_TV_ATTRIBUTION -> DetectionMethod.ULTRASONIC_AD_BEACON
+            MockAudioBeacon.TYPE_RETAIL_ANALYTICS -> DetectionMethod.ULTRASONIC_RETAIL_BEACON
+            MockAudioBeacon.TYPE_CROSS_DEVICE -> DetectionMethod.ULTRASONIC_CROSS_DEVICE
+            else -> DetectionMethod.ULTRASONIC_UNKNOWN
+        }
+        val detection = Detection(
+            id = UUID.randomUUID().toString(),
+            timestamp = result.timestamp,
+            protocol = DetectionProtocol.AUDIO,
+            detectionMethod = method,
+            deviceType = DeviceType.ULTRASONIC_BEACON,
+            deviceName = "Test Ultrasonic ${result.beaconType}",
+            rssi = -100,
+            signalStrength = SignalStrength.UNKNOWN,
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            threatLevel = ThreatLevel.MEDIUM,
+            threatScore = 50,
+            matchedPatterns = "[TEST_MODE,${result.beaconType}]",
+            rawData = "frequencyHz=${result.frequencyHz}; amplitudeDb=${result.amplitudeDb}; durationMs=${result.durationMs}; confidence=${result.confidence}; metadata=${result.metadata}",
+            detectionSource = DetectionSource.AUDIO
+        )
+        detectionRepository.upsertDetection(detection)
+        incrementDetectionCount()
+    }
+
+    private data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
     private fun incrementDetectionCount() {
         _status.update {

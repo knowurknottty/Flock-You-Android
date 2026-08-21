@@ -17,9 +17,6 @@ data class TestModeConfig(
     /** ID of the currently active test scenario (null = no scenario active) */
     val activeScenarioId: String? = null,
 
-    /** Automatically advance through scenario stages */
-    val autoAdvanceScenario: Boolean = true,
-
     /** How often to emit mock detection data (milliseconds) */
     val dataEmissionIntervalMs: Long = 3000L,
 
@@ -27,7 +24,13 @@ data class TestModeConfig(
     val simulateSignalVariation: Boolean = true,
 
     /** Show a visual indicator when test mode is active */
-    val showTestModeBanner: Boolean = true
+    val showTestModeBanner: Boolean = true,
+
+    /** Explicit synthetic latitude for deterministic geo-tagging (null = no synthetic location). */
+    val syntheticLatitude: Double? = null,
+
+    /** Explicit synthetic longitude for deterministic geo-tagging (null = no synthetic location). */
+    val syntheticLongitude: Double? = null
 ) {
     companion object {
         /** Default configuration with test mode disabled */

@@ -88,6 +88,8 @@ class MockCellularScanner : ICellularScanner {
         simulateSignalVariation = enabled
     }
 
+    internal fun isSignalVariationEnabled(): Boolean = simulateSignalVariation
+
     /**
      * Trigger a specific cellular anomaly type.
      */

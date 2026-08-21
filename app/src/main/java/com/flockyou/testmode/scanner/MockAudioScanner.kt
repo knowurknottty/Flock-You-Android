@@ -91,6 +91,8 @@ class MockAudioScanner {
         amplitudeVariation = enabled
     }
 
+    internal fun isAmplitudeVariationEnabled(): Boolean = amplitudeVariation
+
     /**
      * Manually emit a beacon detection.
      */
