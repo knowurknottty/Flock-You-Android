@@ -185,6 +185,10 @@ class WifiDetectionHandler @Inject constructor(
     private var _isActive: Boolean = false
     val isActive: Boolean get() = _isActive
 
+    /** Explicit false-positive suppressions made by this handler's RogueWifiMonitor. */
+    val explicitSuppressionCount: Int
+        get() = rogueWifiMonitor?.suppressedCandidateCount ?: 0
+
     private val _detections = MutableSharedFlow<Detection>(replay = 100)
     val detections: Flow<Detection> = _detections.asSharedFlow()
 

@@ -141,6 +141,8 @@ class MockWifiScanner : IWifiScanner {
         Log.d(TAG, "Signal variation enabled: $enabled")
     }
 
+    internal fun isSignalVariationEnabled(): Boolean = enableSignalVariation
+
     /**
      * Get the current list of mock networks.
      */

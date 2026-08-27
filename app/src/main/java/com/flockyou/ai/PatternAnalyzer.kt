@@ -1082,7 +1082,7 @@ internal suspend fun performBatchAnalysisInternal(
     val startTime = System.currentTimeMillis()
 
     try {
-        val settings = aiSettingsRepository.settings.first()
+        val settings = aiSettingsRepository.settingsSnapshot()
         if (!settings.enabled || !settings.enableBatchAnalysis) {
             return@withContext BatchAnalysisResult(
                 success = false,
@@ -1233,7 +1233,7 @@ internal suspend fun generateThreatAssessmentInternal(
     val startTime = System.currentTimeMillis()
 
     try {
-        val settings = aiSettingsRepository.settings.first()
+        val settings = aiSettingsRepository.settingsSnapshot()
         if (!settings.enabled || !settings.generateThreatAssessments) {
             return@withContext AiAnalysisResult(
                 success = false,

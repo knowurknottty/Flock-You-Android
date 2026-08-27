@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Monitors WiFi environment for rogue access points and surveillance indicators.
@@ -31,6 +32,10 @@ class RogueWifiMonitor(
     private val context: Context,
     private val errorCallback: DetectorCallback? = null
 ) {
+    private val explicitSuppressionCounter = AtomicInteger(0)
+    val suppressedCandidateCount: Int
+        get() = explicitSuppressionCounter.get()
+
     // Minimum distance traveled (in meters) before reporting a tracking device
     // Default: 1609 meters (1 mile) - can be configured via settings
     var minTrackingDistanceMeters: Double = 1609.0
@@ -1348,6 +1353,7 @@ class RogueWifiMonitor(
                 // Mark for clearing after iteration
                 bssidsToClear.add(bssid)
             } else if (analysis.falsePositiveLikelihood > 50f) {
+                explicitSuppressionCounter.incrementAndGet()
                 // Log suppressed detection for debugging
                 Log.d(TAG, "FOLLOWING_NETWORK suppressed for $bssid: " +
                     "confidence=${analysis.followingConfidence}%, " +

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.flockyou.testmode.TestModeConfig
 import com.flockyou.testmode.TestModeConfigRepository
 import com.flockyou.testmode.TestModeOrchestrator
+import com.flockyou.testmode.PersistedTestModeConfig
 import com.flockyou.testmode.TestModeStatus
 import com.flockyou.testmode.TestScenario
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -54,11 +55,27 @@ class TestModeSettingsViewModel @Inject constructor(
      */
     val scenarios: List<TestScenario> = orchestrator.getAvailableScenarios()
 
+    init {
+        viewModelScope.launch {
+            configRepository.config.collect { persisted ->
+                val runtime = orchestrator.config.value
+                val runtimePersisted = PersistedTestModeConfig.fromConfig(runtime)
+                val incomingPersisted = PersistedTestModeConfig.fromConfig(persisted)
+                if (runtimePersisted != incomingPersisted) {
+                    orchestrator.updateConfig(
+                        persisted.copy(activeScenarioId = runtime.activeScenarioId)
+                    )
+                }
+            }
+        }
+    }
+
     /**
      * Enable test mode without starting a specific scenario.
      */
     fun enableTestMode() {
         orchestrator.enableTestMode()
+        viewModelScope.launch { configRepository.setEnabled(true) }
     }
 
     /**
@@ -66,6 +83,7 @@ class TestModeSettingsViewModel @Inject constructor(
      */
     fun disableTestMode() {
         orchestrator.disableTestMode()
+        viewModelScope.launch { configRepository.stopScenario() }
     }
 
     /**
@@ -75,6 +93,7 @@ class TestModeSettingsViewModel @Inject constructor(
      */
     fun startScenario(scenarioId: String) {
         orchestrator.startScenario(scenarioId)
+        viewModelScope.launch { configRepository.startScenario(scenarioId) }
     }
 
     /**
@@ -82,6 +101,7 @@ class TestModeSettingsViewModel @Inject constructor(
      */
     fun stopScenario() {
         orchestrator.stopScenario()
+        viewModelScope.launch { configRepository.setActiveScenario(null) }
     }
 
     /**

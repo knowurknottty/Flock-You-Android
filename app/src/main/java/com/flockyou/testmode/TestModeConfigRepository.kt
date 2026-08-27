@@ -37,10 +37,11 @@ class TestModeConfigRepository @Inject constructor(
     private object Keys {
         val ENABLED = booleanPreferencesKey("test_mode_enabled")
         val ACTIVE_SCENARIO_ID = stringPreferencesKey("active_scenario_id")
-        val AUTO_ADVANCE = booleanPreferencesKey("auto_advance")
         val EMISSION_INTERVAL = longPreferencesKey("emission_interval_ms")
         val SIMULATE_VARIATION = booleanPreferencesKey("simulate_signal_variation")
         val SHOW_BANNER = booleanPreferencesKey("show_test_mode_banner")
+        val SYNTHETIC_LATITUDE = doublePreferencesKey("synthetic_latitude")
+        val SYNTHETIC_LONGITUDE = doublePreferencesKey("synthetic_longitude")
     }
 
     /**
@@ -48,14 +49,14 @@ class TestModeConfigRepository @Inject constructor(
      * Emits updates whenever any configuration value changes.
      */
     val config: Flow<TestModeConfig> = context.testModeDataStore.data.map { prefs ->
-        TestModeConfig(
+        PersistedTestModeConfig(
             enabled = prefs[Keys.ENABLED] ?: false,
-            activeScenarioId = prefs[Keys.ACTIVE_SCENARIO_ID],
-            autoAdvanceScenario = prefs[Keys.AUTO_ADVANCE] ?: true,
             dataEmissionIntervalMs = prefs[Keys.EMISSION_INTERVAL] ?: TestModeConfig.DEFAULT_EMISSION_INTERVAL_MS,
             simulateSignalVariation = prefs[Keys.SIMULATE_VARIATION] ?: true,
-            showTestModeBanner = prefs[Keys.SHOW_BANNER] ?: true
-        )
+            showTestModeBanner = prefs[Keys.SHOW_BANNER] ?: true,
+            syntheticLatitude = prefs[Keys.SYNTHETIC_LATITUDE],
+            syntheticLongitude = prefs[Keys.SYNTHETIC_LONGITUDE]
+        ).toConfig()
     }
 
     /**
@@ -72,14 +73,17 @@ class TestModeConfigRepository @Inject constructor(
      * @param config The new configuration to persist
      */
     suspend fun updateConfig(config: TestModeConfig) {
+        val persisted = PersistedTestModeConfig.fromConfig(config)
         context.testModeDataStore.edit { prefs ->
-            prefs[Keys.ENABLED] = config.enabled
-            config.activeScenarioId?.let { prefs[Keys.ACTIVE_SCENARIO_ID] = it }
-                ?: prefs.remove(Keys.ACTIVE_SCENARIO_ID)
-            prefs[Keys.AUTO_ADVANCE] = config.autoAdvanceScenario
-            prefs[Keys.EMISSION_INTERVAL] = config.dataEmissionIntervalMs
-            prefs[Keys.SIMULATE_VARIATION] = config.simulateSignalVariation
-            prefs[Keys.SHOW_BANNER] = config.showTestModeBanner
+            prefs[Keys.ENABLED] = persisted.enabled
+            prefs.remove(Keys.ACTIVE_SCENARIO_ID)
+            prefs[Keys.EMISSION_INTERVAL] = persisted.dataEmissionIntervalMs
+            prefs[Keys.SIMULATE_VARIATION] = persisted.simulateSignalVariation
+            prefs[Keys.SHOW_BANNER] = persisted.showTestModeBanner
+            persisted.syntheticLatitude?.let { prefs[Keys.SYNTHETIC_LATITUDE] = it }
+                ?: prefs.remove(Keys.SYNTHETIC_LATITUDE)
+            persisted.syntheticLongitude?.let { prefs[Keys.SYNTHETIC_LONGITUDE] = it }
+                ?: prefs.remove(Keys.SYNTHETIC_LONGITUDE)
         }
     }
 
@@ -103,17 +107,6 @@ class TestModeConfigRepository @Inject constructor(
         context.testModeDataStore.edit { prefs ->
             scenarioId?.let { prefs[Keys.ACTIVE_SCENARIO_ID] = it }
                 ?: prefs.remove(Keys.ACTIVE_SCENARIO_ID)
-        }
-    }
-
-    /**
-     * Update the auto-advance setting.
-     *
-     * @param autoAdvance Whether scenarios should auto-advance through stages
-     */
-    suspend fun setAutoAdvance(autoAdvance: Boolean) {
-        context.testModeDataStore.edit { prefs ->
-            prefs[Keys.AUTO_ADVANCE] = autoAdvance
         }
     }
 
@@ -173,7 +166,8 @@ class TestModeConfigRepository @Inject constructor(
     suspend fun startScenario(scenarioId: String) {
         context.testModeDataStore.edit { prefs ->
             prefs[Keys.ENABLED] = true
-            prefs[Keys.ACTIVE_SCENARIO_ID] = scenarioId
+            // Scenario execution is runtime-only. Never resurrect synthetic generation after process death.
+            prefs.remove(Keys.ACTIVE_SCENARIO_ID)
         }
     }
 

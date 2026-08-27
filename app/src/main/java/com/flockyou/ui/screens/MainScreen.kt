@@ -65,6 +65,7 @@ fun MainScreen(
     onNavigateToActiveProbes: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val filteredHistoryDetections by viewModel.filteredHistoryDetections.collectAsStateWithLifecycle()
     val prioritizedEnrichmentIds by viewModel.prioritizedEnrichmentIds.collectAsStateWithLifecycle()
     val flipperUiSettings by viewModel.flipperUiSettings.collectAsStateWithLifecycle()
     val flipperSettings by viewModel.flipperSettings.collectAsStateWithLifecycle()
@@ -463,8 +464,9 @@ fun MainScreen(
                         }
                     }
                     1 -> {
-                        // History tab - Detection list with filters
-                        val filteredDetections = viewModel.getFilteredDetections()
+                        // History tab - precomputed narrow projection. Unrelated service telemetry
+                        // can recompose MainScreen without re-filtering and re-sorting the full history.
+                        val filteredDetections = filteredHistoryDetections
 
                         // Track expanded detection IDs (persists during scroll)
                         val expandedDetectionIds = remember { mutableStateMapOf<String, Boolean>() }
