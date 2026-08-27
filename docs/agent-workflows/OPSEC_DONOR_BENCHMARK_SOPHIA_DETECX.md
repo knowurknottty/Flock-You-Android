@@ -1,7 +1,7 @@
 # OPSEC Donor Benchmark — SØPHIA / Detecx
 
-**Status:** NORMATIVE DONOR/BENCHMARK ADDENDUM  
-**Campaign:** OPSEC Anti-Toy 3× Operational Hardening  
+**Status:** NORMATIVE DONOR/BENCHMARK ADDENDUM
+**Campaign:** OPSEC Anti-Toy 3× Operational Hardening
 **Date:** 2026-08-18
 
 ## Purpose

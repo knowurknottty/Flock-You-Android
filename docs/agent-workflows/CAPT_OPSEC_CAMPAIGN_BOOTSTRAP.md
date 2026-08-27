@@ -1,8 +1,8 @@
 # CAPT Bootstrap Packet — Flock-You OPSEC / Anti-Toy Campaign
 
-**Status:** BOOTSTRAP / MORNING HANDOFF  
-**Date:** 2026-08-18  
-**Repository:** `knowurknottty/Flock-You-Android`  
+**Status:** BOOTSTRAP / MORNING HANDOFF
+**Date:** 2026-08-18
+**Repository:** `knowurknottty/Flock-You-Android`
 **Purpose:** Give CAPT a compact, durable authority packet so the first campaign run starts from GitHub truth rather than reconstructing state from chat history.
 
 ---

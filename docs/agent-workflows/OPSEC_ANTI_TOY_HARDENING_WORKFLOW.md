@@ -1,9 +1,9 @@
 # OPSEC Anti-Toy Hardening & Operational Admission Workflow
 
-**Status:** DESIGN / GOVERNANCE SPEC — REVIEW REQUIRED BEFORE EXECUTION  
-**Repository:** `knowurknottty/Flock-You-Android`  
-**Branch:** `design/opsec-anti-toy-hardening-r1`  
-**Date:** 2026-08-18  
+**Status:** DESIGN / GOVERNANCE SPEC — REVIEW REQUIRED BEFORE EXECUTION
+**Repository:** `knowurknottty/Flock-You-Android`
+**Branch:** `design/opsec-anti-toy-hardening-r1`
+**Date:** 2026-08-18
 **Purpose:** Audit the complete product for toy-grade assumptions and drive each operationally relevant feature toward evidence-backed, resilient, privacy-preserving, security-hardened behavior.
 
 ---
@@ -258,19 +258,19 @@ Severity and confidence are independent.
 
 ### Severity
 
-**S0 — informational**  
+**S0 — informational**
 No meaningful operational consequence; cleanup or documentation quality.
 
-**S1 — low**  
+**S1 — low**
 Localized correctness/usability issue; limited operational consequence.
 
-**S2 — moderate**  
+**S2 — moderate**
 Can materially mislead an operator, waste resources, lose data, or degrade capability.
 
-**S3 — high**  
+**S3 — high**
 Can create a serious privacy/security failure, materially false threat/measurement output, major reliability failure, or significant data loss.
 
-**S4 — critical**  
+**S4 — critical**
 Realistic path to severe confidentiality/integrity failure, dangerous operator conclusion, persistent destructive behavior, compromise of sensitive evidence, or broad production failure.
 
 ### Confidence
