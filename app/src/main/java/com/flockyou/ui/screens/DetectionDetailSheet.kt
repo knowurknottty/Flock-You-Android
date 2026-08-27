@@ -1,6 +1,8 @@
 package com.flockyou.ui.screens
 
+import android.content.Intent
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -24,6 +26,7 @@ import com.flockyou.config.NetworkConfig
 import com.flockyou.data.FeasibilityData
 import com.flockyou.data.model.*
 import com.flockyou.detection.ThreatScoring
+import com.flockyou.network.ShodanSearch
 import com.flockyou.privilege.PrivilegeMode
 import com.flockyou.ui.components.*
 import org.osmdroid.config.Configuration
@@ -54,6 +57,7 @@ fun DetectionDetailSheet(
     onSeeAllRelatedClick: (() -> Unit)? = null,
     privilegeMode: PrivilegeMode? = null
 ) {
+    val context = LocalContext.current
     val threatColor = detection.threatLevel.toColor()
     val deviceInfo = DetectionPatterns.getDeviceTypeInfo(detection.deviceType)
     val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy HH:mm:ss", Locale.getDefault()) }
@@ -1154,6 +1158,34 @@ fun DetectionDetailSheet(
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                 }
+            }
+
+            // Explicit external enrichment. This only opens a browser search; it does not
+            // treat local radio identifiers as a Shodan host or mutate scanner evidence.
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("External Intelligence", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Search Shodan in your browser using this detection's visible identifiers. " +
+                                "Results are external research, not scanner-confirmed evidence.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedButton(onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(ShodanSearch.buildSearchUrl(detection)))
+                            context.startActivity(intent)
+                        }) {
+                            Icon(Icons.Default.Search, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Search Shodan")
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
             }
 
             // Related Detections Section
