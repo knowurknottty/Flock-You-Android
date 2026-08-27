@@ -106,6 +106,8 @@ object ImpactFactors {
         DeviceType.SURVEILLANCE_INFRASTRUCTURE to 0.6,
         DeviceType.TRAFFIC_SENSOR to 0.5,
         DeviceType.FLEET_VEHICLE to 0.5,
+        DeviceType.TESLA_VEHICLE to 0.5,
+        DeviceType.WAYMO_VEHICLE to 0.5,
         DeviceType.RF_INTERFERENCE to 0.5,
         DeviceType.RF_ANOMALY to 0.5
     )
