@@ -603,7 +603,13 @@ class BleDetectionHandler @Inject constructor(
             return result
         }
 
-        // Priority 4: Check device name patterns (includes Flipper Zero, hacking tools)
+        // Priority 4: Strong, published Tesla vehicle-command service fingerprint.
+        checkTeslaVehicleCommandService(context)?.let { result ->
+            lastDetectionTime[context.macAddress] = now
+            return result
+        }
+
+        // Priority 5: Check device name patterns (includes vehicles, Flipper Zero, hacking tools)
         context.deviceName?.let { name ->
             checkDeviceNamePattern(context, name)?.let { result ->
                 lastDetectionTime[context.macAddress] = now
@@ -611,7 +617,7 @@ class BleDetectionHandler @Inject constructor(
             }
         }
 
-        // Priority 5: Check service UUID patterns
+        // Priority 6: Check service UUID patterns
         checkServiceUuidPatterns(context)?.let { result ->
             lastDetectionTime[context.macAddress] = now
             return result
@@ -1094,6 +1100,39 @@ ${formatRawBleData(context)}
 Analyze this detection and provide guidance on the civil liberties implications,
 community organizing opportunities, and legal options for the user.
 """
+    }
+
+    /**
+     * Detect Tesla's published vehicle-command BLE service. This is vehicle-presence evidence,
+     * not evidence that cameras are recording, that the vehicle is autonomous, or that it is tracking the user.
+     */
+    private fun checkTeslaVehicleCommandService(context: BleDetectionContext): BleDetectionResult? {
+        if (!DetectionPatterns.isTeslaVehicleCommandService(context.serviceUuids)) return null
+        val strictName = context.deviceName?.let(DetectionPatterns::isTeslaVehicleAdvertisementName) == true
+        val patterns = mutableListOf("Tesla vehicle-command BLE service UUID ${DetectionPatterns.teslaVehicleCommandServiceUuid}")
+        if (strictName) patterns += "Tesla vehicle-command advertisement name format verified"
+        val detection = Detection(
+            protocol = DetectionProtocol.BLUETOOTH_LE,
+            detectionMethod = DetectionMethod.BLE_SERVICE_UUID,
+            deviceType = DeviceType.TESLA_VEHICLE,
+            deviceName = context.deviceName?.takeIf { it.isNotBlank() } ?: DeviceType.TESLA_VEHICLE.displayName,
+            macAddress = context.macAddress,
+            rssi = context.rssi,
+            signalStrength = rssiToSignalStrength(context.rssi),
+            latitude = context.latitude,
+            longitude = context.longitude,
+            threatLevel = ThreatLevel.INFO,
+            threatScore = 5,
+            manufacturer = "Tesla",
+            serviceUuids = context.serviceUuids.joinToString(",") { it.toString() },
+            matchedPatterns = buildMatchedPatternsJson(patterns),
+            rawData = formatRawBleData(context)
+        )
+        return BleDetectionResult(
+            detection = detection,
+            aiPrompt = "Nearby Tesla vehicle-command BLE interface observed. Treat this as vehicle radio presence only; do not infer active camera recording, tracking, ownership, or intent.",
+            confidence = calculateConfidence(context, if (strictName) 0.98f else 0.95f)
+        )
     }
 
     /**

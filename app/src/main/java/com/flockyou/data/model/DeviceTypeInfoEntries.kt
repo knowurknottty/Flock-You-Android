@@ -565,6 +565,25 @@ internal object DeviceTypeInfoEntries {
                     "🔍 Hidden SSIDs are suspicious"
                 )
             )
+            DeviceType.TESLA_VEHICLE -> DetectionPatterns.DeviceTypeInfo(
+                name = "Tesla Vehicle",
+                shortDescription = "Nearby Tesla Bluetooth Vehicle Interface",
+                fullDescription = "A Tesla vehicle-command Bluetooth interface was observed nearby. " +
+                    "This identifies a vehicle radio interface; it does not establish that cameras are recording, " +
+                    "that the vehicle is tracking you, or who owns or operates it.",
+                capabilities = listOf("Phone-key / vehicle-command Bluetooth connectivity", "Nearby vehicle presence signal"),
+                privacyConcerns = listOf("Radio identifiers may be observable nearby", "Advertisement names can be spoofed"),
+                recommendations = listOf("Treat as informational vehicle presence", "Correlate with repeated sightings before drawing movement conclusions")
+            )
+            DeviceType.WAYMO_VEHICLE -> DetectionPatterns.DeviceTypeInfo(
+                name = "Waymo Vehicle",
+                shortDescription = "Self-Identifying Waymo Bluetooth Candidate",
+                fullDescription = "A bounded BLE name self-identifying as Waymo was observed. Waymo uses Bluetooth/Nearby Devices " +
+                    "for rider-to-vehicle proximity, but no stable public service UUID is used here. The name is spoofable candidate evidence only.",
+                capabilities = listOf("Rider-to-vehicle Bluetooth proximity functions", "Nearby vehicle radio presence"),
+                privacyConcerns = listOf("Self-reported BLE names can be spoofed", "No camera or tracking activity is inferred from this signal"),
+                recommendations = listOf("Treat as INFO-level candidate evidence", "Use repeated independent observations for any movement analysis")
+            )
             DeviceType.SATELLITE_NTN -> DetectionPatterns.DeviceTypeInfo(
                 name = "Satellite NTN Device",
                 shortDescription = "Non-Terrestrial Network Connection",

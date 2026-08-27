@@ -191,6 +191,8 @@ enum class DeviceType(val displayName: String, val emoji: String) {
     POLICE_RADIO("Police Radio System", "📡"),
     POLICE_VEHICLE("Police/Emergency Vehicle", "🚔"),
     FLEET_VEHICLE("Fleet Vehicle", "🚐"),
+    TESLA_VEHICLE("Tesla Vehicle", "🚗"),
+    WAYMO_VEHICLE("Waymo Vehicle", "🚘"),
     STINGRAY_IMSI("Cell Site Simulator", "📶"),
     // WiFi threat device types
     ROGUE_AP("Rogue Access Point", "🏴"),

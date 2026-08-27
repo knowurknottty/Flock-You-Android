@@ -442,13 +442,32 @@ object DetectionPatterns {
         val sourceUrl: String? = null
     )
     
+    /** True only for syntactically valid, globally administered unicast MAC addresses. */
+    fun isGloballyAdministeredMac(macAddress: String): Boolean {
+        val parts = macAddress.replace("-", ":").split(":")
+        if (parts.size != 6 || parts.any { it.length != 2 || it.toIntOrNull(16) == null }) return false
+        val firstOctet = parts.first().toInt(16)
+        return (firstOctet and 0x03) == 0
+    }
+
     /**
-     * Check if a MAC address matches any known prefix
+     * Check if a MAC address matches any known prefix. Randomized/locally administered
+     * addresses are not valid manufacturer OUI evidence and are rejected up front.
      */
     fun matchMacPrefix(macAddress: String): MacPrefix? {
+        if (!isGloballyAdministeredMac(macAddress)) return null
         val normalizedMac = macAddress.uppercase().replace("-", ":")
         return macPrefixes.find { normalizedMac.startsWith(it.prefix.uppercase()) }
     }
+
+    val teslaVehicleCommandServiceUuid: UUID =
+        UUID.fromString("00000211-b2d1-43f0-9b88-960cebf8b91e")
+
+    fun isTeslaVehicleCommandService(serviceUuids: List<UUID>): Boolean =
+        serviceUuids.any { it == teslaVehicleCommandServiceUuid }
+
+    fun isTeslaVehicleAdvertisementName(deviceName: String): Boolean =
+        Regex("^S[0-9a-f]{16}C$").matches(deviceName)
     
     /**
      * Check if SSID matches any known pattern.
