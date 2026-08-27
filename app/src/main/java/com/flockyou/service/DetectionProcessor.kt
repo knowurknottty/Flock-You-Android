@@ -119,7 +119,7 @@ internal suspend fun ScanningService.handleDetection(detection: Detection) {
             // Expensive per-detection analysis is opt-in. AI disabled means no
             // WorkManager/foreground-process churn from the detection hot path.
             if (!currentPrivacySettings.ephemeralModeEnabled) {
-                val aiSettings = aiSettingsRepository.settings.first()
+                val aiSettings = aiSettingsRepository.settingsSnapshot()
                 if (aiSettings.enabled && aiSettings.autoAnalyzeNewDetections) {
                     try {
                         BackgroundAnalysisWorker.triggerForDetections(
@@ -208,7 +208,7 @@ internal fun ScanningService.handleDatabaseError(e: Exception) {
 internal suspend fun ScanningService.insertDetectionWithAnalysis(detection: Detection) {
     repository.insertDetection(detection)
 
-    val aiSettings = aiSettingsRepository.settings.first()
+    val aiSettings = aiSettingsRepository.settingsSnapshot()
     if (aiSettings.enabled && aiSettings.autoAnalyzeNewDetections) {
         try {
             BackgroundAnalysisWorker.triggerForDetections(
@@ -645,7 +645,7 @@ internal suspend fun ScanningService.processSatelliteWithHandler(
 internal fun ScanningService.warmUpLlmEngine() {
     serviceScope.launch {
         try {
-            val aiSettings = aiSettingsRepository.settings.first()
+            val aiSettings = aiSettingsRepository.settingsSnapshot()
             if (!aiSettings.enabled || !aiSettings.autoAnalyzeNewDetections) {
                 Log.d(TAG, "LLM warm-up skipped - AI auto-analysis disabled")
                 return@launch

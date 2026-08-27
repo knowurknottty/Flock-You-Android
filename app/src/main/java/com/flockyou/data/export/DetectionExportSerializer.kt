@@ -98,6 +98,7 @@ object DetectionExportSerializer {
         sb.append("  <Document>\n")
         sb.append("    <name>Flock-You Detections</name>\n")
         sb.append("    <description>Local surveillance-device detection export</description>\n")
+        appendKmlThreatStyles(sb)
 
         detections.forEach { d ->
             if (!request.includeLocation || !hasLocation(d)) return@forEach
@@ -210,10 +211,10 @@ object DetectionExportSerializer {
             fields.add(d.detectionMethod.name)
             fields.add(d.rssi.toString())
             fields.add(d.signalStrength.name)
-            fields.add(identifier(request, d.macAddress) ?: "")
-            fields.add(identifier(request, d.ssid) ?: "")
-            fields.add(identifier(request, d.deviceName) ?: "")
-            fields.add(identifier(request, d.manufacturer) ?: "")
+            fields.add(identifier(request, d.macAddress)?.let(::spreadsheetSafeText) ?: "")
+            fields.add(identifier(request, d.ssid)?.let(::spreadsheetSafeText) ?: "")
+            fields.add(identifier(request, d.deviceName)?.let(::spreadsheetSafeText) ?: "")
+            fields.add(identifier(request, d.manufacturer)?.let(::spreadsheetSafeText) ?: "")
             fields.add(if (request.includeLocation) d.latitude?.let { roundCoordinate(request, it) } ?: "" else "")
             fields.add(if (request.includeLocation) d.longitude?.let { roundCoordinate(request, it) } ?: "" else "")
             fields.add(d.seenCount.toString())
@@ -253,6 +254,28 @@ object DetectionExportSerializer {
     // ===========================================================================================
     // Escaping helpers
     // ===========================================================================================
+
+    private fun appendKmlThreatStyles(sb: StringBuilder) {
+        val styles = listOf(
+            "critical" to "ff2f2fd3",
+            "high" to "ff007cf5",
+            "medium" to "ff2dc0fb",
+            "low" to "ff3c8e38",
+            "info" to "ffd27619"
+        )
+        styles.forEach { (id, color) ->
+            sb.append("    <Style id=\"").append(id).append("\">")
+            sb.append("<IconStyle><color>").append(color).append("</color></IconStyle>")
+            sb.append("</Style>\n")
+        }
+    }
+
+    private fun spreadsheetSafeText(value: String): String {
+        val firstMeaningful = value.firstOrNull { !it.isWhitespace() }
+        val dangerous = firstMeaningful in setOf('=', '+', '-', '@') ||
+            value.startsWith('\t') || value.startsWith('\r')
+        return if (dangerous) "'$value" else value
+    }
 
     private fun jsonEscape(s: String): String {
         val sb = StringBuilder(s.length)

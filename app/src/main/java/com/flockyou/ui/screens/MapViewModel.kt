@@ -53,6 +53,15 @@ class MapViewModel @Inject constructor(
             initialValue = false
         )
 
+    val hasLocatedDetections: StateFlow<Boolean> = repository.detectionsWithLocation
+        .map { it.isNotEmpty() }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = false
+        )
+
     /**
      * Filtered geolocated detections for the map.
      *

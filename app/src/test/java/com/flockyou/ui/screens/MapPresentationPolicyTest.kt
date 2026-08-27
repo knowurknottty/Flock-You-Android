@@ -114,9 +114,33 @@ class MapPresentationPolicyTest {
     }
 
     @Test
+    fun activeLocationStatus_copyDescribesStoredEvidenceNotLiveGps() {
+        assertEquals(
+            "Stored location data",
+            MapPresentationPolicy.gpsStatusLabel(MapGpsStatus.ACTIVE)
+        )
+    }
+
+    @Test
+    fun emptyState_offersClearFiltersWhenStoredLocationsAreFilteredOut() {
+        val presentation = MapPresentationPolicy.emptyStatePresentation(
+            hasDetections = true,
+            hasLocatedDetections = true,
+            hasActiveFilters = true,
+            isScanning = true
+        )
+
+        assertEquals("No Matching Detections", presentation.title)
+        assertEquals("Clear Filters", presentation.actionLabel)
+        assertTrue(presentation.actionEnabled)
+    }
+
+    @Test
     fun emptyState_doesNotOfferStartScanningWhenScannerIsAlreadyRunning() {
         val presentation = MapPresentationPolicy.emptyStatePresentation(
             hasDetections = false,
+            hasLocatedDetections = false,
+            hasActiveFilters = false,
             isScanning = true
         )
 

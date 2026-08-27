@@ -258,6 +258,28 @@ class DetectionExportSerializerTest {
     }
 
     @Test
+    fun `CSV neutralizes spreadsheet formula prefixes in untrusted text fields`() {
+        val values = listOf("=1+1", "+1+1", "-1+1", "@SUM(1,1)")
+        values.forEach { value ->
+            val csv = DetectionExportSerializer.serialize(
+                ExportRequest(format = ExportFormat.CSV, redactIdentifiers = false),
+                listOf(detection(id = "d-$value", ssid = value, deviceName = value, manufacturer = value)),
+            )
+            assertTrue("formula-like text must be neutralized: $value", csv.contains("'$value"))
+        }
+    }
+
+    @Test
+    fun `KML defines every referenced threat style`() {
+        val kml = DetectionExportSerializer.serialize(
+            ExportRequest(format = ExportFormat.KML),
+            listOf(detection(threatLevel = ThreatLevel.HIGH)),
+        )
+        assertTrue(kml.contains("<Style id=\"high\">"))
+        assertTrue(kml.contains("<styleUrl>#high</styleUrl>"))
+    }
+
+    @Test
     fun `CSV escapes embedded commas and quotes`() {
         val d = detection(id = "d1", ssid = "Home, Sweet \"Home\"")
         val csv = DetectionExportSerializer.serialize(

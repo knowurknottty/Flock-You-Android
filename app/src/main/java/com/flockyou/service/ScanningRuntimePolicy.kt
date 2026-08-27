@@ -27,4 +27,10 @@ internal object ScanningRuntimePolicy {
         config: ScanConfig,
         batteryMode: BatteryAdaptiveMode
     ): Boolean = config.aggressiveBleMode && batteryMode == BatteryAdaptiveMode.PERFORMANCE
+
+    fun shouldRestartCellularMonitoring(
+        enabled: Boolean,
+        monitorPresent: Boolean,
+        anomalyJobActive: Boolean
+    ): Boolean = enabled && monitorPresent && !anomalyJobActive
 }

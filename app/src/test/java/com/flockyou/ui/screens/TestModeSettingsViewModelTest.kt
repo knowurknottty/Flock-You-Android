@@ -52,6 +52,23 @@ class TestModeSettingsViewModelTest {
 
 
     @Test
+    fun `persisted echo does not erase runtime only active scenario`() = runTest(dispatcher) {
+        val orchestrator = mockk<TestModeOrchestrator>(relaxed = true)
+        val repository = mockk<TestModeConfigRepository>()
+        val runtime = TestModeConfig(enabled = true, activeScenarioId = "tracker_following")
+        val persisted = runtime.copy(activeScenarioId = null)
+        every { orchestrator.config } returns MutableStateFlow(runtime)
+        every { orchestrator.status } returns MutableStateFlow(TestModeStatus())
+        every { orchestrator.getAvailableScenarios() } returns emptyList()
+        every { repository.config } returns MutableStateFlow(persisted)
+
+        TestModeSettingsViewModel(orchestrator, repository)
+        advanceUntilIdle()
+
+        verify(exactly = 0) { orchestrator.updateConfig(any()) }
+    }
+
+    @Test
     fun `enable persists enabled state`() = runTest(dispatcher) {
         val (subject, _, repository) = newSubject()
         subject.enableTestMode()

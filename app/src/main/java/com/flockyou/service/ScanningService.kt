@@ -2346,8 +2346,11 @@ class ScanningService : Service() {
             restartScanningLoopIfNeeded()
         }
 
-        if (cellularMonitor != null &&
-            (cellularAnomalyJob == null || cellularAnomalyJob?.isActive != true)) {
+        if (ScanningRuntimePolicy.shouldRestartCellularMonitoring(
+                enabled = currentSettings.value.enableCellular,
+                monitorPresent = cellularMonitor != null,
+                anomalyJobActive = cellularAnomalyJob?.isActive == true
+            )) {
             Log.w(TAG, "WATCHDOG: Cellular anomaly job stopped, restarting...")
             restartCellularMonitoringJobs()
         }

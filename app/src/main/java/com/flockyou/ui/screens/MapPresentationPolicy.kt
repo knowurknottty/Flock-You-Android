@@ -64,34 +64,43 @@ object MapPresentationPolicy {
         else -> MapGpsStatus.IDLE
     }
 
+    fun gpsStatusLabel(status: MapGpsStatus): String = when (status) {
+        MapGpsStatus.ACTIVE -> "Stored location data"
+        MapGpsStatus.SEARCHING -> "Waiting for location data"
+        MapGpsStatus.IDLE -> "Location data idle"
+        MapGpsStatus.DISABLED -> "No stored location data"
+    }
+
     fun emptyStatePresentation(
         hasDetections: Boolean,
+        hasLocatedDetections: Boolean,
+        hasActiveFilters: Boolean,
         isScanning: Boolean
-    ): MapEmptyStatePresentation {
-        // Initial extraction intentionally preserves the current behavior.
-        // The scanning-state truthfulness regression is pinned separately before changing it.
-        @Suppress("UNUSED_VARIABLE")
-        val scanningState = isScanning
-        return when {
-            hasDetections -> MapEmptyStatePresentation(
-                title = "No Location Data",
-                body = "Detections were found but none have location data. Enable GPS permission to see detections on the map.",
-                actionLabel = "Enable Location",
-                actionEnabled = true
-            )
-            isScanning -> MapEmptyStatePresentation(
-                title = "No Detections Yet",
-                body = "Scanning is active. Detections with location data will appear on the map when found.",
-                actionLabel = "Scanning...",
-                actionEnabled = false
-            )
-            else -> MapEmptyStatePresentation(
-                title = "No Detections Yet",
-                body = "Start scanning to detect surveillance devices. They will appear on the map when found.",
-                actionLabel = "Start Scanning",
-                actionEnabled = true
-            )
-        }
+    ): MapEmptyStatePresentation = when {
+        hasLocatedDetections && hasActiveFilters -> MapEmptyStatePresentation(
+            title = "No Matching Detections",
+            body = "Stored mapped detections exist, but the current filters hide all of them.",
+            actionLabel = "Clear Filters",
+            actionEnabled = true
+        )
+        hasDetections -> MapEmptyStatePresentation(
+            title = "No Location Data",
+            body = "Detections were found but none have stored location data. Enable location permission for future detections.",
+            actionLabel = "Enable Location",
+            actionEnabled = true
+        )
+        isScanning -> MapEmptyStatePresentation(
+            title = "No Detections Yet",
+            body = "Scanning is active. Detections with location data will appear on the map when found.",
+            actionLabel = "Scanning...",
+            actionEnabled = false
+        )
+        else -> MapEmptyStatePresentation(
+            title = "No Detections Yet",
+            body = "Start scanning to detect surveillance devices. They will appear on the map when found.",
+            actionLabel = "Start Scanning",
+            actionEnabled = true
+        )
     }
 
     fun filterDetections(

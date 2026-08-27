@@ -43,6 +43,16 @@ class ScanningRuntimePolicyTest {
     }
 
     @Test
+    fun disabledCellular_neverRequestsWatchdogRestart() {
+        assertFalse(ScanningRuntimePolicy.shouldRestartCellularMonitoring(
+            enabled = false, monitorPresent = true, anomalyJobActive = false
+        ))
+        assertTrue(ScanningRuntimePolicy.shouldRestartCellularMonitoring(
+            enabled = true, monitorPresent = true, anomalyJobActive = false
+        ))
+    }
+
+    @Test
     fun performanceMode_requiresSettingsAdmission() {
         assertFalse(
             "PERFORMANCE cannot escalate a pre-admission/default ScanConfig",

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.flockyou.testmode.TestModeConfig
 import com.flockyou.testmode.TestModeConfigRepository
 import com.flockyou.testmode.TestModeOrchestrator
+import com.flockyou.testmode.PersistedTestModeConfig
 import com.flockyou.testmode.TestModeStatus
 import com.flockyou.testmode.TestScenario
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -57,8 +58,13 @@ class TestModeSettingsViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             configRepository.config.collect { persisted ->
-                if (orchestrator.config.value != persisted) {
-                    orchestrator.updateConfig(persisted)
+                val runtime = orchestrator.config.value
+                val runtimePersisted = PersistedTestModeConfig.fromConfig(runtime)
+                val incomingPersisted = PersistedTestModeConfig.fromConfig(persisted)
+                if (runtimePersisted != incomingPersisted) {
+                    orchestrator.updateConfig(
+                        persisted.copy(activeScenarioId = runtime.activeScenarioId)
+                    )
                 }
             }
         }

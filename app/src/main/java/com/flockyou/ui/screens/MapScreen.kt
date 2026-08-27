@@ -60,6 +60,7 @@ fun MapScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val filteredDetections by viewModel.detectionsWithLocation.collectAsStateWithLifecycle()
     val hasAnyDetections by viewModel.hasAnyDetections.collectAsStateWithLifecycle()
+    val hasLocatedDetections by viewModel.hasLocatedDetections.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     var selectedDetection by remember { mutableStateOf<Detection?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
@@ -103,9 +104,9 @@ fun MapScreen(
 
     // This map has stored detection coordinates, not an Android Location accuracy fix.
     // Never infer GPS +/- meters from the surveillance device RSSI/signal-strength field.
-    LaunchedEffect(filteredDetections, hasAnyDetections, isScanning) {
+    LaunchedEffect(filteredDetections, hasAnyDetections, hasLocatedDetections, isScanning) {
         gpsStatus = MapPresentationPolicy.gpsStatus(
-            hasLocatedDetections = filteredDetections.isNotEmpty(),
+            hasLocatedDetections = hasLocatedDetections,
             hasAnyDetections = hasAnyDetections,
             isScanning = isScanning
         )
@@ -293,7 +294,7 @@ fun MapScreen(
                             }
                         }
                     }) {
-                        Icon(Icons.Default.MyLocation, contentDescription = "My Location")
+                        Icon(Icons.Default.MyLocation, contentDescription = "Latest Detection Location")
                     }
                 }
             )
@@ -307,10 +308,17 @@ fun MapScreen(
             val hasLocationData = filteredDetections.isNotEmpty()
 
             if (!hasLocationData) {
+                val hasActiveFilters = viewModel.getActiveFilterCount() > 0
                 MapEmptyState(
                     hasDetections = hasAnyDetections,
+                    hasLocatedDetections = hasLocatedDetections,
+                    hasActiveFilters = hasActiveFilters,
                     isScanning = isScanning,
-                    onRequestPermissions = if (hasAnyDetections) requestLocationPermissions else startScanning
+                    onAction = when {
+                        hasLocatedDetections && hasActiveFilters -> viewModel::clearFilters
+                        hasAnyDetections -> requestLocationPermissions
+                        else -> startScanning
+                    }
                 )
             } else {
                 // OpenStreetMap View with HTTPS tile source
@@ -862,23 +870,23 @@ private fun GpsStatusIndicator(
     val (statusColor, statusIcon, statusText) = when (status) {
         MapGpsStatus.ACTIVE -> Triple(
             StatusActive,
-            Icons.Default.GpsFixed,
-            "GPS Active"
+            Icons.Default.LocationOn,
+            MapPresentationPolicy.gpsStatusLabel(status)
         )
         MapGpsStatus.SEARCHING -> Triple(
             StatusWarning,
             Icons.Default.GpsNotFixed,
-            "Searching..."
+            MapPresentationPolicy.gpsStatusLabel(status)
         )
         MapGpsStatus.IDLE -> Triple(
             StatusInactive,
             Icons.Default.GpsNotFixed,
-            "Idle"
+            MapPresentationPolicy.gpsStatusLabel(status)
         )
         MapGpsStatus.DISABLED -> Triple(
             StatusError,
             Icons.Default.GpsOff,
-            "Disabled"
+            MapPresentationPolicy.gpsStatusLabel(status)
         )
     }
 
@@ -932,12 +940,16 @@ private fun GpsStatusIndicator(
 @Composable
 private fun MapEmptyState(
     hasDetections: Boolean,
+    hasLocatedDetections: Boolean,
+    hasActiveFilters: Boolean,
     isScanning: Boolean,
-    onRequestPermissions: () -> Unit,
+    onAction: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val presentation = MapPresentationPolicy.emptyStatePresentation(
         hasDetections = hasDetections,
+        hasLocatedDetections = hasLocatedDetections,
+        hasActiveFilters = hasActiveFilters,
         isScanning = isScanning
     )
     Box(
@@ -980,7 +992,7 @@ private fun MapEmptyState(
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Button(
-                    onClick = onRequestPermissions,
+                    onClick = onAction,
                     enabled = presentation.actionEnabled
                 ) {
                     Icon(
