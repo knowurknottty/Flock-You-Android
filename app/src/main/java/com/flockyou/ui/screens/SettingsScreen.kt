@@ -1270,7 +1270,7 @@ fun NetworkPrivacySection(viewModel: MainViewModel) {
                     onClick = {
                         val intent = Intent(
                             Intent.ACTION_VIEW,
-                            Uri.parse(OrbotHelper.ORBOT_FDROID_URL)
+                            Uri.parse(OrbotHelper.preferredInstallUrl())
                         ).apply {
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         }

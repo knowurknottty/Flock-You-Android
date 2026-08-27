@@ -74,6 +74,13 @@ enum class TimeRange(val label: String, val durationMs: Long?) {
     CUSTOM("Custom", null)
 }
 
+internal data class HeadlineCounts(val total: Int, val highThreat: Int)
+
+internal fun calculateHeadlineCounts(detections: List<Detection>): HeadlineCounts = HeadlineCounts(
+    total = detections.size,
+    highThreat = detections.count { it.threatLevel == ThreatLevel.CRITICAL || it.threatLevel == ThreatLevel.HIGH }
+)
+
 data class MainUiState(
     val isScanning: Boolean = false,
     val isLoading: Boolean = true,
@@ -1053,11 +1060,12 @@ class MainViewModel @Inject constructor(
     private suspend fun refreshDetections() {
         try {
             val detections = repository.getAllDetectionsSnapshot()
-            val totalCount = repository.getTotalDetectionCount()
+            val counts = calculateHeadlineCounts(detections)
             _uiState.update {
                 it.copy(
                     detections = detections,
-                    totalCount = totalCount
+                    totalCount = counts.total,
+                    highThreatCount = counts.highThreat
                 )
             }
         } catch (e: Exception) {

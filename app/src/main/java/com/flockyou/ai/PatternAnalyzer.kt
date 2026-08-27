@@ -818,6 +818,11 @@ private fun getComprehensiveDeviceInfoLegacy(deviceType: DeviceType): DeviceInfo
             category = "Fleet Management",
             surveillanceType = "Vehicle Tracking"
         )
+        DeviceType.TESLA_VEHICLE, DeviceType.WAYMO_VEHICLE -> DeviceInfo(
+            description = "Nearby vehicle Bluetooth radio observed. This is informational vehicle-presence evidence, not proof of active surveillance.",
+            category = "Vehicle Radio",
+            surveillanceType = "Informational Presence"
+        )
         DeviceType.SURVEILLANCE_VAN -> DeviceInfo(
             description = "Possible mobile surveillance van detected. May contain advanced monitoring equipment including IMSI catchers, cameras, or listening devices.",
             category = "Mobile Surveillance",

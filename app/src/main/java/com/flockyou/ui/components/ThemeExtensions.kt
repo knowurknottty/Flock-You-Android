@@ -50,6 +50,7 @@ fun DeviceType.toIcon(): ImageVector = when (this) {
     DeviceType.POLICE_RADIO -> Icons.Default.Radio
     DeviceType.POLICE_VEHICLE -> Icons.Default.LocalPolice
     DeviceType.FLEET_VEHICLE -> Icons.Default.DirectionsCar
+    DeviceType.TESLA_VEHICLE, DeviceType.WAYMO_VEHICLE -> Icons.Default.DirectionsCar
     DeviceType.STINGRAY_IMSI -> Icons.Default.CellTower
     DeviceType.ROGUE_AP -> Icons.Default.WifiOff
     DeviceType.HIDDEN_CAMERA -> Icons.Default.Visibility

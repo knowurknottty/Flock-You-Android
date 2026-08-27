@@ -63,6 +63,28 @@ internal object BleNamePatterns {
             description = "Pigvision BLE Device"
         ),
         
+        // ==================== Vehicle BLE Patterns ====================
+
+        // Tesla vehicle-command BLE protocol: exact local-name form S<16 lowercase hex>C.
+        DetectionPattern(
+            type = PatternType.BLE_NAME_REGEX,
+            pattern = "^S[0-9a-f]{16}C$",
+            deviceType = DeviceType.TESLA_VEHICLE,
+            manufacturer = "Tesla",
+            threatScore = 5,
+            description = "Tesla vehicle-command BLE advertisement name; nearby vehicle radio, not surveillance evidence"
+        ),
+        // Waymo publishes Bluetooth/Nearby Devices use for vehicle proximity, but no stable public UUID.
+        // Match only bounded self-identifying names and keep this as spoofable INFO evidence.
+        DetectionPattern(
+            type = PatternType.BLE_NAME_REGEX,
+            pattern = "(?i)^waymo(?:[_-][A-Za-z0-9]{1,16})?$",
+            deviceType = DeviceType.WAYMO_VEHICLE,
+            manufacturer = "Waymo",
+            threatScore = 5,
+            description = "Self-identifying Waymo BLE name; spoofable candidate evidence only"
+        ),
+
         // ==================== Police Technology BLE Patterns ====================
         
         // Axon Body Cameras

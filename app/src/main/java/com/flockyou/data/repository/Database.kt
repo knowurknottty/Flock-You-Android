@@ -825,6 +825,9 @@ abstract class FlockYouDatabase : RoomDatabase() {
                     "flockyou_database_encrypted"  // New name to avoid conflicts with old unencrypted DB
                 )
                     .openHelperFactory(factory)
+                    // ScanningService runs in :scanning while the UI reads Room in the main process.
+                    // Without multi-instance invalidation, UI Flows can remain stale until service reconnect/stop.
+                    .enableMultiInstanceInvalidation()
                     .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                     // Fail loudly on an unhandled UPGRADE (so we never silently destroy a user's
                     // encrypted history because a future migration was forgotten). Only a genuine
