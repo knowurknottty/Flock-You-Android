@@ -21,11 +21,20 @@ class OrbotHelper @Inject constructor(
     companion object {
         private const val TAG = "OrbotHelper"
         const val ORBOT_PACKAGE_NAME = "org.torproject.android"
-        const val ORBOT_FDROID_URL = "https://f-droid.org/packages/org.torproject.android/"
-        const val ORBOT_PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=org.torproject.android"
+        const val ORBOT_GITHUB_UNIVERSAL_URL = "https://github.com/guardianproject/orbot-android/releases/download/17.9.5-RC-4-tor-0.4.9.11/Orbot-17.9.5-RC-4-tor-0.4.9.11-fullperm-universal-release.apk"
+        const val ORBOT_GITHUB_ARM64_URL = "https://github.com/guardianproject/orbot-android/releases/download/17.9.5-RC-4-tor-0.4.9.11/Orbot-17.9.5-RC-4-tor-0.4.9.11-fullperm-arm64-v8a-release.apk"
+        const val ORBOT_MEGA_ARM64_URL = "https://mega.nz/file/bjogRAbY#8bItqL2nKSL2JEnB39d2VbUe4KgG8GtzagFmcHtPIV0"
+        const val ORBOT_MEGA_UNIVERSAL_URL = "https://mega.nz/file/amBj0KLa#ldnGCu6RMJJ0oZTf7hKDpzFzfgRDZQRiJmOZnMCWpNk"
         const val DEFAULT_SOCKS_PORT = 9050
         const val DEFAULT_HTTP_PORT = 8118
         private const val CONNECTION_TIMEOUT_MS = 3000
+
+        fun preferredInstallUrl(supportedAbis: Array<String> = Build.SUPPORTED_ABIS): String =
+            if (supportedAbis.any { it.equals("arm64-v8a", ignoreCase = true) }) {
+                ORBOT_MEGA_ARM64_URL
+            } else {
+                ORBOT_MEGA_UNIVERSAL_URL
+            }
     }
 
     fun isOrbotInstalled(): Boolean {
@@ -74,10 +83,9 @@ class OrbotHelper @Inject constructor(
         }
     }
 
-    fun openOrbotInstallPage(preferFDroid: Boolean = true) {
+    fun openOrbotInstallPage() {
         try {
-            val url = if (preferFDroid) ORBOT_FDROID_URL else ORBOT_PLAY_STORE_URL
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(preferredInstallUrl())).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
